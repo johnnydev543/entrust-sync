@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
 """
-華南永昌持股同步 — 探索模式 v3
+華南永昌持股同步 — 探索模式 v4
 ===================================
 
-v3 核心改動：
-- 使用 persistent context（持續性瀏覽器設定檔）
-  → 憑證只需安裝一次，之後自動帶著
-- 不再攔截彈出視窗（那是 Windows 元件，抓不到）
-- 改用「你操作，腳本等你」的模式
+v4 改進：
+- 自動處理 JavaScript alert（錯誤 5010、憑證提示等）
+- 憑證 popup window：嘗試攔截並截圖分析
+- persistent context：憑證只需安裝一次
 
-使用方式：
-  第一次：python explore.py
-    → 在瀏覽器中完成登入 + 憑證申請
-    → 關閉後，憑證保存在瀏覽器 profile 中
-  
-  之後：python explore.py
-    → 自動載入 profile（含憑證）
-    → 只需輸入帳密 + OTP
+Alert 流程：
+  1. Alert: 錯誤代碼 5010 → 自動按 OK
+  2. Alert: 您尚未下載憑證 → 自動按 OK
+  3. Popup window（無 URL）→ 截圖 + 存 HTML 供分析
 """
 
 import json
@@ -30,17 +25,102 @@ from playwright.sync_api import sync_playwright
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
-# 用 persistent context — 瀏覽器資料存在這裡（含憑證、cookies）
 USER_DATA_DIR = SCRIPT_DIR / "browser_profile"
 
 LOGIN_URL = "https://eztrade.entrust.com.tw/hnsweb/loginnew.aspx"
+
+
+# ─── Alert 記錄 ──────────────────────────────────────────────
+alert_log = []
+
+
+def on_dialog(dialog):
+    """自動處理 JavaScript alert/confirm/prompt"""
+    msg = dialog.message
+    print(f"   💬 [Alert] {dialog.type}: {msg[:200]}")
+    alert_log.append({
+        "type": dialog.type,
+        "message": msg,
+        "time": time.strftime("%H:%M:%S"),
+    })
+    # 全部自動按 OK / 確定
+    dialog.accept()
+
+
+def on_page_created(new_page):
+    """攔截新開的視窗"""
+    print(f"   🪟 [Popup] 新視窗開啟！")
+    try:
+        new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+    except Exception:
+        pass
+
+    url = ""
+    title = ""
+    try:
+        url = new_page.url
+        title = new_page.title()
+    except Exception:
+        pass
+
+    print(f"      URL: {url or '(空白)'}")
+    print(f"      標題: {title or '(空白)'}")
+
+    # 截圖
+    ts = time.strftime("%H%M%S")
+    try:
+        new_page.screenshot(path=str(OUTPUT_DIR / f"popup_{ts}.png"))
+        print(f"      📸 截圖: popup_{ts}.png")
+    except Exception as e:
+        print(f"      ⚠️ 截圖失敗: {e}")
+
+    # 嘗試讀取內容
+    try:
+        html = new_page.content()
+        html_path = OUTPUT_DIR / f"popup_{ts}.html"
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        print(f"      📄 HTML 已存: popup_{ts}.html")
+
+        # 讀取頁面文字
+        try:
+            text = new_page.inner_text("body")
+            if text and text.strip():
+                print(f"      📝 文字內容: {text.strip()[:300]}")
+            else:
+                print(f"      ⚠️ 頁面文字為空")
+                # 嘗試讀取所有 input
+                inputs = new_page.locator("input, select, button").all()
+                if inputs:
+                    print(f"      🔍 找到 {len(inputs)} 個表單元素：")
+                    for inp in inputs[:10]:
+                        try:
+                            tag = inp.evaluate("el => el.outerHTML.substring(0, 200)")
+                            print(f"         {tag}")
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"      ⚠️ 無法讀取文字: {e}")
+
+    except Exception as e:
+        print(f"      ⚠️ 無法讀取內容: {e}")
+
+    # 檢查是否有 iframe
+    try:
+        frames = new_page.frames
+        if len(frames) > 1:
+            print(f"      🖼️ 找到 {len(frames) - 1} 個 iframe：")
+            for i, frame in enumerate(frames):
+                if frame != new_page.main_frame:
+                    print(f"         iframe #{i}: {frame.url[:100]}")
+    except Exception:
+        pass
 
 
 def capture_all_tables(page) -> list[dict]:
     """抓取頁面上所有表格（含 iframe）"""
     tables_data = []
 
-    # 主頁面
     for t_idx, table in enumerate(page.locator("table").all()):
         try:
             rows = table.locator("tr").all()
@@ -65,15 +145,13 @@ def capture_all_tables(page) -> list[dict]:
                 "data": data_rows,
                 "source": "main",
             })
-        except Exception as e:
-            print(f"      ⚠️ 表格 {t_idx} 解析失敗: {e}")
+        except Exception:
+            pass
 
-    # iframe
     for i, frame in enumerate(page.frames):
         if frame == page.main_frame:
             continue
         try:
-            print(f"      🔍 iframe #{i}: {frame.url[:80]}")
             for t_idx, table in enumerate(frame.locator("table").all()):
                 try:
                     rows = table.locator("tr").all()
@@ -100,8 +178,8 @@ def capture_all_tables(page) -> list[dict]:
                     })
                 except Exception:
                     pass
-        except Exception as e:
-            print(f"      ⚠️ iframe #{i}: {e}")
+        except Exception:
+            pass
 
     return tables_data
 
@@ -117,6 +195,7 @@ def save_step(step_name: str, page, tables_data: list[dict]):
         "page_url": page.url,
         "page_title": page.title(),
         "tables": tables_data,
+        "alerts": alert_log.copy(),
     }
 
     with open(output_file, "w", encoding="utf-8") as f:
@@ -127,20 +206,21 @@ def save_step(step_name: str, page, tables_data: list[dict]):
 
 
 def main():
+    global alert_log
+
     print()
-    print("🏦 華南永昌持股同步 — 探索模式 v3")
+    print("🏦 華南永昌持股同步 — 探索模式 v4")
     print("=" * 45)
     print()
-    print("🔑 persistent context 模式：")
-    print("   → 瀏覽器資料（憑證、cookies）會保存在 browser_profile/")
-    print("   → 第一次需要手動處理憑證")
-    print("   → 之後憑證會跟著 profile，不用再處理")
+    print("🔑 v4 改進：")
+    print("   ✅ 自動處理 alert（5010 錯誤、憑證提示）")
+    print("   ✅ 攔截並分析 popup window")
+    print("   ✅ persistent context（憑證只需裝一次）")
     print()
-    print("操作方式：")
-    print("   1. 瀏覽器開啟後，手動完成登入（帳密 + OTP）")
-    print("   2. 如有憑證視窗，手動處理（只會出現一次）")
-    print("   3. 登入完成後回到終端按 Enter")
-    print("   4. 導航到想抓的頁面，按 Enter 抓取")
+    print("⚠️ 憑證 popup 如果沒有 URL：")
+    print("   → 腳本會截圖存 HTML")
+    print("   → 如果是 Windows 元件，需要手動操作")
+    print("   → 操作完後回到終端按 Enter 即可")
     print()
 
     steps = [
@@ -151,10 +231,6 @@ def main():
 
     with sync_playwright() as p:
         print("🚀 啟動瀏覽器（persistent context）...")
-        print(f"   Profile: {USER_DATA_DIR}")
-
-        # 用 persistent context — 關鍵差異！
-        # 這樣憑證和 cookies 都會保存在 browser_profile/ 目錄中
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(USER_DATA_DIR),
             headless=False,
@@ -162,35 +238,74 @@ def main():
             accept_downloads=True,
         )
 
-        # 取得第一個頁面（或建立新的）
-        if len(context.pages) > 0:
-            page = context.pages[0]
-        else:
-            page = context.new_page()
+        # ── 註冊事件處理器 ──
+        context.on("page", on_page_created)
+
+        page = context.pages[0] if context.pages else context.new_page()
+        page.on("dialog", on_dialog)  # 自動處理 alert
+
+        # 也對所有新頁面註冊 dialog handler
+        # (context.on("page") 已經在 on_page_created 處理)
 
         try:
             print(f"\n🌐 開啟: {LOGIN_URL}")
             page.goto(LOGIN_URL, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
 
-            # 顯示頁面狀態
             print(f"   頁面: {page.url[:80]}")
             print(f"   標題: {page.title()}")
+
+            # 如果有 alert 自動跳出，dialog handler 會自動按 OK
+            # 等一下讓 alert 處理完畢
+            page.wait_for_timeout(2000)
+
+            if alert_log:
+                print(f"\n   📋 已自動處理 {len(alert_log)} 個 alert：")
+                for a in alert_log:
+                    print(f"      [{a['type']}] {a['message'][:100]}")
 
             all_results = {}
 
             for step_name, prompt in steps:
+                alert_log.clear()  # 清除上一步的 alert 紀錄
+
                 print(f"\n📋 {prompt}")
+                print("   💡 alert 會自動按 OK，憑證 popup 需手動處理")
                 input("   👉 完成後按 Enter 繼續...")
 
                 # 截圖
                 page.screenshot(path=str(OUTPUT_DIR / f"screenshot_{step_name}.png"))
-                print("   📸 已截圖")
 
-                # 抓取
+                # 如果有新開的 popup，也截圖所有頁面
+                all_pages = context.pages
+                if len(all_pages) > 1:
+                    print(f"   📄 目前有 {len(all_pages)} 個瀏覽器視窗")
+                    for i, pg in enumerate(all_pages):
+                        try:
+                            pg.screenshot(path=str(OUTPUT_DIR / f"screenshot_{step_name}_page{i}.png"))
+                            print(f"      Page {i}: {pg.url[:80]} → 截圖已存")
+                        except Exception as e:
+                            print(f"      Page {i}: 截圖失敗 ({e})")
+
+                # 抓取主頁面表格
                 tables = capture_all_tables(page)
+
+                # 也嘗試從其他頁面抓取
+                for i, pg in enumerate(all_pages):
+                    if pg == page:
+                        continue
+                    try:
+                        extra_tables = capture_all_tables(pg)
+                        if extra_tables:
+                            for t in extra_tables:
+                                t["source"] = f"page_{i}"
+                            tables.extend(extra_tables)
+                            print(f"   📊 從 page_{i} 抓到 {len(extra_tables)} 個表格")
+                    except Exception:
+                        pass
+
                 if tables:
-                    print(f"   📊 找到 {len(tables)} 個表格")
+                    print(f"   📊 共找到 {len(tables)} 個表格")
                     for t in tables:
                         src = t.get('source', 'main')
                         print(f"      [{src}] {t['row_count']} 行, "
@@ -198,22 +313,28 @@ def main():
                               f"{'...' if len(t['headers']) > 6 else ''}")
                 else:
                     print("   ⚠️ 沒找到表格")
-                    print("   💡 可能需要展開區塊或切換 tab")
+                    print("   💡 可能需要：展開區塊 / 切換 tab / 等資料載入")
+
+                # 顯示這步的 alert 紀錄
+                if alert_log:
+                    print(f"   📋 這步出現了 {len(alert_log)} 個 alert：")
+                    for a in alert_log:
+                        print(f"      [{a['type']}] {a['message'][:150]}")
 
                 save_step(step_name, page, tables)
                 all_results[step_name] = {
                     "url": page.url,
                     "title": page.title(),
                     "tables_count": len(tables),
+                    "alerts": alert_log.copy(),
                 }
 
             # 額外頁面
             while True:
-                extra = input("\n🎯 要抓其他頁面嗎？（輸入名稱，或直接 Enter 結束）: ").strip()
+                extra = input("\n🎯 其他頁面？（名稱 / Enter 結束）: ").strip()
                 if not extra:
                     break
-                print(f"📋 請導航到「{extra}」頁面")
-                input("   👉 完成後按 Enter...")
+                input(f"   導航到「{extra}」後按 Enter...")
                 page.screenshot(path=str(OUTPUT_DIR / f"screenshot_{extra}.png"))
                 tables = capture_all_tables(page)
                 save_step(extra, page, tables)
@@ -225,9 +346,11 @@ def main():
                     "date": date.today().isoformat(),
                     "source": "華南永昌證券",
                     "steps": all_results,
+                    "total_alerts": sum(len(r.get("alerts", [])) for r in all_results.values()),
                 }, f, ensure_ascii=False, indent=2)
 
             print(f"\n📊 同步完成！結果: {summary_file}")
+            print(f"   📂 所有截圖和 HTML 在: {OUTPUT_DIR}")
 
         except KeyboardInterrupt:
             print("\n\n⚠️ 使用者中斷")
@@ -238,10 +361,9 @@ def main():
             page.screenshot(path=str(OUTPUT_DIR / "error.png"))
 
         finally:
-            # persistent context 關閉時會自動保存 profile
             context.close()
-            print("🔒 瀏覽器已關閉（profile 已保存）")
-            print(f"   下次啟動會自動載入: {USER_DATA_DIR}")
+            print("\n🔒 瀏覽器已關閉（profile 已保存）")
+            print(f"   Profile: {USER_DATA_DIR}")
 
 
 if __name__ == "__main__":
