@@ -28,7 +28,7 @@ OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 # ─── 登入頁面 ───────────────────────────────────────────────
-LOGIN_URL = "https://wm.entrust.com.tw/ftr_hns_wm/WebLogin.aspx"
+LOGIN_URL = "https://eztrade.entrust.com.tw/hnsweb/loginnew.aspx"
 
 # ─── 等待設定 ───────────────────────────────────────────────
 DEFAULT_TIMEOUT = 30_000  # 30 秒

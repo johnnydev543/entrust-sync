@@ -34,7 +34,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-LOGIN_URL = "https://wm.entrust.com.tw/ftr_hns_wm/WebLogin.aspx"
+LOGIN_URL = "https://eztrade.entrust.com.tw/hnsweb/loginnew.aspx"
 
 
 def capture_all_tables(page) -> list[dict]:
