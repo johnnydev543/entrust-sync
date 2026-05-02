@@ -1,4 +1,8 @@
 .env
 output/
+browser_profile/
+session/
 __pycache__/
 *.pyc
+*.png
+*.html
