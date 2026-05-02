@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-華南永昌證券 — 持股 & 交易紀錄自動同步
+華南永昌證券 — 持股 & 交易紀錄自動同步 v2
 ==========================================
 
-在本地電腦跑的 Playwright 腳本。
-- 自動登入華南永昌數位網
-- 抓取持股明細與交易紀錄
-- 存成 JSON 檔案
-
-⚠️ 帳密只存在你自己的電腦上，OTP 需手動輸入。
+v2 改進：
+- 處理彈出視窗（憑證申請等）
+- Session 保存/載入（避免每次重新登入）
+- iframe 內容抓取
+- 更穩健的等待與錯誤處理
 """
 
 import argparse
@@ -22,297 +21,214 @@ from pathlib import Path
 from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ─── 路徑設定 ───────────────────────────────────────────────
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
+SESSION_DIR = SCRIPT_DIR / "session"
+SESSION_DIR.mkdir(exist_ok=True)
 
-# ─── 登入頁面 ───────────────────────────────────────────────
 LOGIN_URL = "https://eztrade.entrust.com.tw/hnsweb/loginnew.aspx"
-
-# ─── 等待設定 ───────────────────────────────────────────────
-DEFAULT_TIMEOUT = 30_000  # 30 秒
-OTP_WAIT_TIMEOUT = 120_000  # OTP 等待 2 分鐘
+DEFAULT_TIMEOUT = 30_000
+OTP_WAIT_TIMEOUT = 180_000  # 3 分鐘
 
 
 def load_credentials() -> tuple[str, str]:
-    """從 .env 或環境變數讀取帳密"""
     load_dotenv(SCRIPT_DIR / ".env")
     account = os.getenv("ENTRUST_ACCOUNT", "")
     password = os.getenv("ENTRUST_PASSWORD", "")
     return account, password
 
 
-def login(page, account: str, password: str, headed: bool = True):
-    """
-    登入華南永昌數位網。
-    如果帳密為空，會在瀏覽器中等待手動輸入。
-    OTP 一定需要手動輸入。
-    """
-    print("🌐 正在開啟華南永昌數位網登入頁...")
-    page.goto(LOGIN_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
-    page.wait_for_timeout(2000)
+def save_session(context, name: str = "default"):
+    """保存瀏覽器 session"""
+    state_path = SESSION_DIR / f"session_{name}.json"
+    context.storage_state(path=str(state_path))
+    print(f"   💾 Session 已保存: {state_path}")
+    return state_path
 
-    # 如果有帳密，自動填入；否則等使用者手動輸入
-    if account and password:
-        print("📝 自動填入帳號密碼...")
+
+def load_session_path() -> str | None:
+    """載入已保存的 session 路徑"""
+    state_path = SESSION_DIR / "session_default.json"
+    if state_path.exists():
+        # 檢查檔案年齡
+        mtime = datetime.fromtimestamp(state_path.stat().st_mtime)
+        age_hours = (datetime.now() - mtime).total_seconds() / 3600
+        print(f"   📂 找到 session（{age_hours:.1f} 小時前保存）")
+        if age_hours > 1:
+            print("   ⚠️ Session 可能已過期（超過 1 小時）")
+        return str(state_path)
+    return None
+
+
+def check_session_valid(page) -> bool:
+    """檢查 session 是否仍然有效"""
+    try:
+        url = page.url.lower()
+        if "login" in url:
+            return False
+        login_form = page.locator('input[type="password"]')
+        if login_form.is_visible(timeout=3000):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+class PopupHandler:
+    """處理華南永昌的彈出視窗"""
+
+    def __init__(self, context, output_dir: Path):
+        self.context = context
+        self.output_dir = output_dir
+        self.popups = []
+        self.context.on("page", self._on_popup)
+
+    def _on_popup(self, popup_page):
+        print(f"   🪟 偵測到彈出視窗！")
         try:
-            # 嘗試找到帳號輸入框（身分證字號或帳號）
-            # 華南永昌登入頁可能有多種欄位名稱，逐一嘗試
-            account_selectors = [
-                'input[name*="id"]',
-                'input[name*="account"]',
-                'input[name*="ID"]',
-                'input[type="text"]',
-                'input[id*="txtID"]',
-                'input[id*="txtAccount"]',
-            ]
-            password_selectors = [
-                'input[name*="pwd"]',
-                'input[name*="password"]',
-                'input[name*="PWD"]',
-                'input[type="password"]',
-                'input[id*="txtPWD"]',
-                'input[id*="txtPassword"]',
-            ]
+            popup_page.wait_for_load_state("domcontentloaded", timeout=5000)
+            url = popup_page.url
+            title = popup_page.title()
+            print(f"      URL: {url[:100]}")
+            print(f"      標題: {title}")
 
-            # 填帳號
-            filled = False
-            for sel in account_selectors:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=3000):
-                        el.click()
-                        el.fill(account)
-                        filled = True
-                        print(f"   ✓ 帳號已填入 (selector: {sel})")
-                        break
-                except Exception:
-                    continue
-            if not filled:
-                print("   ⚠️ 找不到帳號欄位，請手動輸入")
+            # 截圖
+            ts = time.strftime("%H%M%S")
+            screenshot_path = self.output_dir / f"popup_{ts}.png"
+            popup_page.screenshot(path=str(screenshot_path))
 
-            # 填密碼
-            filled = False
-            for sel in password_selectors:
-                try:
-                    el = page.locator(sel).first
-                    if el.is_visible(timeout=3000):
-                        el.click()
-                        el.fill(password)
-                        filled = True
-                        print(f"   ✓ 密碼已填入")
-                        break
-                except Exception:
-                    continue
-            if not filled:
-                print("   ⚠️ 找不到密碼欄位，請手動輸入")
-
-            # 嘗試選擇「證券」認證方式
+            # 存 HTML
             try:
-                sec_tab = page.locator('text=證券').first
-                if sec_tab.is_visible(timeout=3000):
-                    sec_tab.click()
-                    print("   ✓ 已選擇證券認證")
+                content = popup_page.content()
+                content_path = self.output_dir / f"popup_{ts}.html"
+                with open(content_path, "w", encoding="utf-8") as f:
+                    f.write(content)
             except Exception:
-                pass
+                content_path = None
 
-            # 點擊登入按鈕
-            login_selectors = [
-                'button:has-text("登入")',
-                'input[type="submit"]',
-                'a:has-text("登入")',
-                '#btnLogin',
-                'input[id*="btnLogin"]',
-            ]
-            for sel in login_selectors:
-                try:
-                    btn = page.locator(sel).first
-                    if btn.is_visible(timeout=3000):
-                        btn.click()
-                        print("   ✓ 已點擊登入")
-                        break
-                except Exception:
-                    continue
+            # 頁面文字
+            try:
+                body_text = popup_page.inner_text("body")
+                if body_text and body_text.strip():
+                    preview = body_text.strip()[:200]
+                    print(f"      📝 內容預覽: {preview}...")
+                else:
+                    print("      ⚠️ 頁面文字為空")
+            except Exception:
+                print("      ⚠️ 無法讀取頁面文字")
+
+            self.popups.append({
+                "url": url,
+                "title": title,
+                "screenshot": str(screenshot_path),
+                "time": ts,
+            })
 
         except Exception as e:
-            print(f"   ⚠️ 自動填入失敗: {e}")
-            print("   → 請手動在瀏覽器中輸入帳密並登入")
+            print(f"      ⚠️ 處理彈出視窗時出錯: {e}")
 
-    # ── 等待 OTP 或登入完成 ──
-    print("\n🔑 請在瀏覽器中完成登入（包含 OTP 驗證）...")
-    if not headed:
-        print("   ⚠️ 無頭模式下無法手動輸入 OTP，請改用 --headed")
 
-    # 等待登入成功的特徵：URL 變化或特定元素出現
-    # 華南永昌登入後通常會跳轉到主頁面
-    print("   ⏳ 等待登入完成...")
-    try:
-        page.wait_for_url("**/Main**", timeout=OTP_WAIT_TIMEOUT)
-    except PlaywrightTimeout:
+def capture_all_tables(page) -> list[dict]:
+    """抓取頁面上所有表格（包含 iframe）"""
+    tables_data = []
+
+    # ── 主頁面表格 ──
+    tables = page.locator("table").all()
+    for t_idx, table in enumerate(tables):
         try:
-            page.wait_for_url("**/Home**", timeout=5000)
-        except PlaywrightTimeout:
-            try:
-                page.wait_for_url("**/default**", timeout=5000)
-            except PlaywrightTimeout:
-                # 最後手段：等使用者確認
-                print("   ⏳ 未偵測到登入跳轉，請確認已登入後按 Enter...")
-                if headed:
-                    input("   → 登入完成後按 Enter 繼續...")
-
-    print("✅ 登入成功！")
-    page.wait_for_timeout(2000)
-
-
-def navigate_to_holdings(page):
-    """導航到持股明細頁面"""
-    print("📊 正在前往持股查詢頁面...")
-
-    # 嘗試多種可能的選單路徑
-    # 華南永昌的選單結構可能變動，這裡用多種策略
-    strategies = [
-        # 策略 1：直接點選單文字
-        {"desc": "點擊帳務選單", "selectors": [
-            'text=帳務',
-            'text=帳務查詢',
-            'text=庫存查詢',
-            'text=持股',
-            'text=持股明細',
-        ]},
-        # 策略 2：用 link text
-        {"desc": "用連結導航", "selectors": [
-            'a:has-text("帳務")',
-            'a:has-text("庫存")',
-            'a:has-text("持股明細")',
-        ]},
-    ]
-
-    for strategy in strategies:
-        for sel in strategy["selectors"]:
-            try:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=3000):
-                    el.click()
-                    page.wait_for_timeout(1000)
-                    print(f"   ✓ {strategy['desc']}: {sel}")
-                    break
-            except Exception:
+            rows = table.locator("tr").all()
+            if not rows:
                 continue
-
-    # 嘗試直接用 URL 導航（如果知道持股頁面的直接連結）
-    # 這需要實際探索後才能確定
-    page.wait_for_timeout(2000)
-
-
-def scrape_holdings(page) -> list[dict]:
-    """抓取持股明細"""
-    print("📋 正在抓取持股明細...")
-
-    holdings = []
-
-    # 嘗試找到表格
-    try:
-        table = page.locator("table").first
-        if table.is_visible(timeout=5000):
-            rows = table.locator("tr")
             headers = []
-
-            # 讀取表頭
-            header_row = rows.first
-            for th in header_row.locator("th, td").all():
-                headers.append(th.text_content().strip())
-
-            # 讀取資料行
-            for i in range(1, rows.count()):
-                row = rows.nth(i)
+            for cell in rows[0].locator("th, td").all():
+                headers.append(cell.text_content().strip())
+            data_rows = []
+            for row in rows[1:]:
                 cells = row.locator("td").all()
-                if cells:
-                    row_data = {}
-                    for j, cell in enumerate(cells):
-                        key = headers[j] if j < len(headers) else f"col_{j}"
-                        row_data[key] = cell.text_content().strip()
-                    if row_data:
-                        holdings.append(row_data)
+                if not cells:
+                    continue
+                row_data = {}
+                for j, cell in enumerate(cells):
+                    key = headers[j] if j < len(headers) else f"col_{j}"
+                    row_data[key] = cell.text_content().strip()
+                if row_data:
+                    data_rows.append(row_data)
+            tables_data.append({
+                "table_index": t_idx,
+                "headers": headers,
+                "row_count": len(data_rows),
+                "data": data_rows,
+                "source": "main",
+            })
+        except Exception as e:
+            print(f"      ⚠️ 表格 {t_idx} 解析失敗: {e}")
 
-            print(f"   ✓ 抓到 {len(holdings)} 筆持股資料")
-        else:
-            print("   ⚠️ 找不到持股表格，嘗試截圖除錯...")
-            page.screenshot(path=str(OUTPUT_DIR / "debug_holdings.png"))
-
-    except Exception as e:
-        print(f"   ⚠️ 抓取持股失敗: {e}")
-        page.screenshot(path=str(OUTPUT_DIR / "debug_holdings_error.png"))
-
-    return holdings
-
-
-def navigate_to_transactions(page):
-    """導航到交易紀錄頁面"""
-    print("📜 正在前往交易查詢頁面...")
-
-    selectors = [
-        'text=交易查詢',
-        'text=委託查詢',
-        'text=成交查詢',
-        'text=歷史成交',
-        'a:has-text("交易")',
-        'a:has-text("成交")',
-    ]
-
-    for sel in selectors:
-        try:
-            el = page.locator(sel).first
-            if el.is_visible(timeout=3000):
-                el.click()
-                page.wait_for_timeout(1000)
-                break
-        except Exception:
+    # ── iframe 表格 ──
+    for i, frame in enumerate(page.frames):
+        if frame == page.main_frame:
             continue
+        try:
+            frame_url = frame.url[:80]
+            print(f"      🔍 掃描 iframe #{i}: {frame_url}")
+            tables = frame.locator("table").all()
+            for t_idx, table in enumerate(tables):
+                try:
+                    rows = table.locator("tr").all()
+                    if not rows:
+                        continue
+                    headers = []
+                    for cell in rows[0].locator("th, td").all():
+                        headers.append(cell.text_content().strip())
+                    data_rows = []
+                    for row in rows[1:]:
+                        cells = row.locator("td").all()
+                        if not cells:
+                            continue
+                        row_data = {}
+                        for j, cell in enumerate(cells):
+                            key = headers[j] if j < len(headers) else f"col_{j}"
+                            row_data[key] = cell.text_content().strip()
+                        if row_data:
+                            data_rows.append(row_data)
+                    tables_data.append({
+                        "table_index": t_idx,
+                        "headers": headers,
+                        "row_count": len(data_rows),
+                        "data": data_rows,
+                        "source": f"iframe_{i}",
+                    })
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"      ⚠️ iframe #{i} 無法讀取: {e}")
 
-    page.wait_for_timeout(2000)
+    return tables_data
 
 
-def scrape_transactions(page) -> list[dict]:
-    """抓取交易紀錄"""
-    print("📋 正在抓取交易紀錄...")
+def save_step(step_name: str, page, tables_data: list[dict], popup_info: list = None):
+    """儲存單一步驟的結果"""
+    today = date.today().isoformat()
+    output_file = OUTPUT_DIR / f"{step_name}_{today}.json"
 
-    transactions = []
+    result = {
+        "step": step_name,
+        "date": today,
+        "page_url": page.url,
+        "page_title": page.title(),
+        "tables": tables_data,
+        "popups": popup_info or [],
+    }
 
-    try:
-        table = page.locator("table").first
-        if table.is_visible(timeout=5000):
-            rows = table.locator("tr")
-            headers = []
+    with open(output_file, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
 
-            header_row = rows.first
-            for th in header_row.locator("th, td").all():
-                headers.append(th.text_content().strip())
-
-            for i in range(1, rows.count()):
-                row = rows.nth(i)
-                cells = row.locator("td").all()
-                if cells:
-                    row_data = {}
-                    for j, cell in enumerate(cells):
-                        key = headers[j] if j < len(headers) else f"col_{j}"
-                        row_data[key] = cell.text_content().strip()
-                    if row_data:
-                        transactions.append(row_data)
-
-            print(f"   ✓ 抓到 {len(transactions)} 筆交易紀錄")
-        else:
-            print("   ⚠️ 找不到交易表格")
-            page.screenshot(path=str(OUTPUT_DIR / "debug_transactions.png"))
-
-    except Exception as e:
-        print(f"   ⚠️ 抓取交易紀錄失敗: {e}")
-
-    return transactions
+    print(f"   💾 已存: {output_file}")
+    return output_file
 
 
 def save_data(holdings: list[dict], transactions: list[dict]):
-    """儲存抓取的資料"""
+    """儲存最終結果"""
     today = date.today().isoformat()
 
     holdings_file = OUTPUT_DIR / f"holdings_{today}.json"
@@ -325,7 +241,6 @@ def save_data(holdings: list[dict], transactions: list[dict]):
             "count": len(holdings),
             "holdings": holdings
         }, f, ensure_ascii=False, indent=2)
-    print(f"   💾 持股明細已存: {holdings_file}")
 
     with open(transactions_file, "w", encoding="utf-8") as f:
         json.dump({
@@ -334,116 +249,216 @@ def save_data(holdings: list[dict], transactions: list[dict]):
             "count": len(transactions),
             "transactions": transactions
         }, f, ensure_ascii=False, indent=2)
-    print(f"   💾 交易紀錄已存: {transactions_file}")
 
     return holdings_file, transactions_file
 
 
-def interactive_mode(page):
-    """
-    互動模式：讓使用者自己操作瀏覽器登入，
-    腳本只負責等待和抓取。
-    """
-    print("\n" + "=" * 50)
-    print("🔑 互動模式 — 請在瀏覽器中完成登入")
-    print("=" * 50)
-    print()
-    print("步驟：")
-    print("  1. 在瀏覽器中輸入帳號密碼")
-    print("  2. 輸入 OTP 驗證碼")
-    print("  3. 登入成功後，回到終端按 Enter")
-    print()
-
-    input("   → 登入完成後按 Enter 繼續...")
-
-    # 登入後截圖確認
-    page.screenshot(path=str(OUTPUT_DIR / "after_login.png"))
-    print("   ✓ 已截圖確認登入狀態")
-
-
 def main():
-    parser = argparse.ArgumentParser(description="華南永昌持股同步工具")
+    parser = argparse.ArgumentParser(description="華南永昌持股同步工具 v2")
     parser.add_argument("--auto", action="store_true", help="自動模式（需設定 .env）")
     parser.add_argument("--headed", action="store_true", default=True, help="顯示瀏覽器（預設）")
-    parser.add_argument("--headless", action="store_true", help="無頭模式（不推薦，OTP需手動輸入）")
+    parser.add_argument("--headless", action="store_true", help="無頭模式")
+    parser.add_argument("--no-session", action="store_true", help="不使用保存的 session")
     parser.add_argument("--debug", action="store_true", help="除錯模式，每步截圖")
     args = parser.parse_args()
 
     headed = not args.headless
-    account, password = "", ""
 
+    print()
+    print("🏦 華南永昌持股同步工具 v2")
+    print("=" * 40)
+    print("v2 功能：")
+    print("  ✅ 彈出視窗自動截圖記錄")
+    print("  ✅ Session 保存/載入")
+    print("  ✅ iframe 內容抓取")
+    print()
+
+    account, password = "", ""
     if args.auto:
         account, password = load_credentials()
         if not account or not password:
-            print("❌ 自動模式需要設定 .env 檔案（請複製 .env.example 並填入帳密）")
+            print("❌ 自動模式需要設定 .env")
             sys.exit(1)
-        print(f"   ✓ 已從 .env 讀取帳號: {account[:3]}***")
-
-    print()
-    print("🏦 華南永昌持股同步工具")
-    print("=" * 40)
+        print(f"   ✓ 帳號: {account[:3]}***")
 
     with sync_playwright() as p:
         print("🚀 啟動瀏覽器...")
         browser = p.chromium.launch(headless=not headed)
+
+        # 載入 session
+        storage_state = None
+        if not args.no_session:
+            storage_state = load_session_path()
+
         context = browser.new_context(
             viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            storage_state=storage_state,
+            accept_downloads=True,
         )
+
+        popup_handler = PopupHandler(context, OUTPUT_DIR)
         page = context.new_page()
 
         try:
-            # ── 登入 ──
+            # ── 開啟登入頁 ──
+            print(f"🌐 開啟: {LOGIN_URL}")
             page.goto(LOGIN_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
+            page.wait_for_timeout(2000)
 
-            if args.auto and account and password:
-                # 自動填入帳密，但 OTP 仍需手動
-                login(page, account, password, headed=headed)
+            # 檢查 session
+            if storage_state and check_session_valid(page):
+                print("✅ Session 有效，跳過登入！")
             else:
-                # 完全互動模式
-                interactive_mode(page)
+                if args.auto and account and password:
+                    # 自動填入帳密
+                    print("📝 自動填入帳密...")
+                    # 嘗試各種 selector
+                    account_filled = False
+                    password_filled = False
+
+                    for sel in ['input[name*="id"]', 'input[name*="account"]',
+                                'input[type="text"]', 'input[id*="txtID"]',
+                                'input[id*="txtAccount"]', 'input[id*="Account"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=2000):
+                                el.click()
+                                el.fill(account)
+                                account_filled = True
+                                print(f"   ✓ 帳號已填入")
+                                break
+                        except Exception:
+                            continue
+
+                    for sel in ['input[name*="pwd"]', 'input[name*="password"]',
+                                'input[type="password"]', 'input[id*="txtPWD"]',
+                                'input[id*="Password"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=2000):
+                                el.click()
+                                el.fill(password)
+                                password_filled = True
+                                print(f"   ✓ 密碼已填入")
+                                break
+                        except Exception:
+                            continue
+
+                    # 點登入
+                    for sel in ['button:has-text("登入")', 'input[type="submit"]',
+                                'a:has-text("登入")', '#btnLogin']:
+                        try:
+                            btn = page.locator(sel).first
+                            if btn.is_visible(timeout=2000):
+                                btn.click()
+                                print("   ✓ 已點擊登入")
+                                break
+                        except Exception:
+                            continue
+
+                print()
+                print("🔑 請在瀏覽器中完成登入（包含 OTP + 憑證）")
+                print("   ⚠️ 如果跳出憑證視窗，請手動處理")
+                print("   📸 腳本會自動截圖記錄彈出視窗")
+                input("   👉 登入完成後按 Enter 繼續...")
+
+                # 截圖確認
+                page.screenshot(path=str(OUTPUT_DIR / "after_login.png"))
+                print("   📸 已截圖確認登入狀態")
 
             if args.debug:
                 page.screenshot(path=str(OUTPUT_DIR / "debug_01_after_login.png"))
 
             # ── 抓取持股 ──
-            navigate_to_holdings(page)
+            print()
+            print("📊 請導航到「持股明細」或「庫存查詢」頁面")
+            input("   👉 到達後按 Enter 抓取...")
+
+            page.screenshot(path=str(OUTPUT_DIR / f"screenshot_holdings.png"))
+            holdings_tables = capture_all_tables(page)
+            save_step("holdings", page, holdings_tables, popup_handler.popups)
+
             if args.debug:
-                page.screenshot(path=str(OUTPUT_DIR / "debug_02_holdings_page.png"))
-            holdings = scrape_holdings(page)
+                page.screenshot(path=str(OUTPUT_DIR / "debug_02_holdings.png"))
 
             # ── 抓取交易紀錄 ──
-            navigate_to_transactions(page)
-            if args.debug:
-                page.screenshot(path=str(OUTPUT_DIR / "debug_03_transactions_page.png"))
-            transactions = scrape_transactions(page)
+            print()
+            print("📜 請導航到「交易紀錄」或「成交查詢」頁面")
+            input("   👉 到達後按 Enter 抓取...")
 
-            # ── 儲存 ──
+            page.screenshot(path=str(OUTPUT_DIR / f"screenshot_transactions.png"))
+            transactions_tables = capture_all_tables(page)
+            save_step("transactions", page, transactions_tables, popup_handler.popups)
+
+            if args.debug:
+                page.screenshot(path=str(OUTPUT_DIR / "debug_03_transactions.png"))
+
+            # ── 額外頁面 ──
+            while True:
+                extra = input("\n🎯 要抓其他頁面嗎？（輸入名稱，或直接 Enter 結束）: ").strip()
+                if not extra:
+                    break
+                print(f"📋 請導航到「{extra}」頁面")
+                input("   👉 到達後按 Enter 抓取...")
+                page.screenshot(path=str(OUTPUT_DIR / f"screenshot_{extra}.png"))
+                tables = capture_all_tables(page)
+                save_step(extra, page, tables, popup_handler.popups)
+
+            # ── 保存 session ──
+            if not args.no_session:
+                try:
+                    save_session(context)
+                    print("\n💾 Session 已保存！下次啟動可以直接使用（如果未過期）")
+                except Exception as e:
+                    print(f"⚠️ Session 保存失敗: {e}")
+
+            # ── 結果統計 ──
+            holdings = []
+            for t in holdings_tables:
+                holdings.extend(t.get("data", []))
+
+            transactions = []
+            for t in transactions_tables:
+                transactions.extend(t.get("data", []))
+
             if holdings or transactions:
                 h_file, t_file = save_data(holdings, transactions)
                 print()
                 print("📊 同步完成！")
-                print(f"   持股: {len(holdings)} �筆")
+                print(f"   持股: {len(holdings)} 筆")
                 print(f"   交易: {len(transactions)} 筆")
-                print()
-                print("📁 輸出檔案：")
+                print(f"\n📁 輸出：")
                 print(f"   {h_file}")
                 print(f"   {t_file}")
             else:
                 print()
-                print("⚠️ 未抓取到任何資料")
+                print("⚠️ 未抓取到表格資料")
                 print("   可能原因：")
-                print("   1. 登入未成功")
-                print("   2. 網頁結構變動")
-                print("   3. 需要手動導航到正確頁面")
-                print()
-                print("💡 建議用 --debug 模式重新執行，檢查截圖")
+                print("   1. 頁面資料在 iframe 中（腳本會自動掃描）")
+                print("   2. 需要展開或切換 tab")
+                print("   3. 頁面尚未載入完成")
+                print("\n💡 建議用 explore.py --debug 重新執行")
                 page.screenshot(path=str(OUTPUT_DIR / "debug_final.png"))
 
+            # 彈出視窗摘要
+            if popup_handler.popups:
+                print(f"\n🪟 共捕獲 {len(popup_handler.popups)} 個彈出視窗")
+                for p in popup_handler.popups:
+                    print(f"   - {p['title']} ({p['url'][:60]})")
+
+        except KeyboardInterrupt:
+            print("\n\n⚠️ 使用者中斷")
+            page.screenshot(path=str(OUTPUT_DIR / "interrupted.png"))
+            if not args.no_session:
+                try:
+                    save_session(context)
+                except Exception:
+                    pass
+
         except Exception as e:
-            print(f"\n❌ 發生錯誤: {e}")
-            page.screenshot(path=str(OUTPUT_DIR / "error_screenshot.png"))
-            print(f"   已截圖: {OUTPUT_DIR / 'error_screenshot.png'}")
+            print(f"\n❌ 錯誤: {e}")
+            page.screenshot(path=str(OUTPUT_DIR / "error.png"))
             raise
 
         finally:
