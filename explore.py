@@ -74,6 +74,29 @@ def on_page_created(new_page):
     except Exception as e:
         print(f"      ⚠️ 截圖失敗: {e}")
 
+    # 強制嘗試操作視窗（即使沒有網址）
+    try:
+        # 嘗試點擊「安裝憑證」按鈕（假設按鈕文字是「安裝」）
+        install_button = new_page.locator("text=安裝").first
+        if install_button.is_visible():
+            install_button.click()
+            print("      ✅ 已點擊「安裝」按鈕")
+        
+        # 嘗試輸入密碼（假設輸入框有特定 ID 或文字）
+        password_input = new_page.locator("input[type='password']").first
+        if password_input.is_visible():
+            password_input.fill("你的憑證密碼")  # ← 改成你的憑證密碼
+            print("      ✅ 已輸入憑證密碼")
+        
+        # 嘗試點擊「確定」按鈕
+        confirm_button = new_page.locator("text=確定").first
+        if confirm_button.is_visible():
+            confirm_button.click()
+            print("      ✅ 已點擊「確定」按鈕")
+
+    except Exception as e:
+        print(f"      ⚠️ 操作視窗失敗: {e}")
+
     # 嘗試讀取內容
     try:
         html = new_page.content()
