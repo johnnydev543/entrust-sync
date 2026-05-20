@@ -37,38 +37,100 @@ def on_dialog(dialog):
     msg = dialog.message
     print(f"   💬 [Alert] {dialog.type}: {msg[:200]}")
     alert_log.append({"type": dialog.type, "message": msg})
-    dialog.accept()
+    try:
+        dialog.accept()
+    except Exception:
+        pass
 
 
 def on_popup(new_page):
-    """攔截彈出視窗"""
+    """攔截彈出視窗，立即關閉不需要的 popup"""
     print(f"   🪟 [Popup] 新視窗！")
+
+    # 記錄初始 URL
     try:
-        new_page.wait_for_load_state("domcontentloaded", timeout=5000)
+        initial_url = new_page.url
+        print(f"      初始 URL: {initial_url or '(空白)'}")
+    except Exception:
+        initial_url = ""
+
+    # 立即判斷是否需要關閉 — 不等待載入，避免觸發 dialog 導致 debugger paused
+    should_close = False
+    close_reason = ""
+
+    if "TransPage" in (initial_url or ""):
+        should_close = True
+        close_reason = "TransPage.aspx"
+    elif "ElectricCA" in (initial_url or "") or "CertCaApply" in (initial_url or ""):
+        should_close = True
+        close_reason = "憑證申請頁面"
+    elif not initial_url or initial_url.lower() == "about:blank":
+        # about:blank — 稍後再判斷
+        pass
+
+    if should_close:
+        print(f"      🔄 立即關閉 popup: {close_reason}")
+        try:
+            new_page.close()
+        except Exception:
+            pass
+        return
+
+    # 對於不確定的頁面，等待一小段時間
+    try:
+        new_page.wait_for_load_state("domcontentloaded", timeout=3000)
     except Exception:
         pass
+
     url = ""
     title = ""
     try:
         url = new_page.url
         title = new_page.title()
     except Exception:
-        pass
+        print(f"      ⚠️ 頁面已關閉")
+        return
+
     print(f"      URL: {url or '(空白)'}")
     print(f"      標題: {title or '(空白)'}")
 
+    # 再次判斷
+    if "TransPage" in (url or ""):
+        print(f"      🔄 關閉 popup: TransPage.aspx")
+        try:
+            new_page.close()
+        except Exception:
+            pass
+        return
+    elif "ElectricCA" in (url or "") or "CertCaApply" in (url or ""):
+        print(f"      🔄 關閉 popup: 憑證申請頁面")
+        try:
+            new_page.close()
+        except Exception:
+            pass
+        return
+    elif not url or url.lower() == "about:blank":
+        print(f"      🔄 關閉空白頁面")
+        try:
+            new_page.close()
+        except Exception:
+            pass
+        return
+
+    # 保留有意義的頁面
     ts = time.strftime("%H%M%S")
     try:
         new_page.screenshot(path=str(OUTPUT_DIR / f"popup_{ts}.png"))
-    except Exception:
-        pass
+        print(f"      📸 截圖: popup_{ts}.png")
+    except Exception as e:
+        print(f"      ⚠️ 截圖失敗: {e}")
     try:
         html = new_page.content()
         with open(OUTPUT_DIR / f"popup_{ts}.html", "w", encoding="utf-8") as f:
             f.write(html)
-        print(f"      📄 HTML 已存")
-    except Exception:
-        pass
+        print(f"      📄 HTML 已存 ({len(html)} chars)")
+    except Exception as e:
+        print(f"      ⚠️ 無法讀取內容: {e}")
 
 
 def load_credentials() -> tuple[str, str]:
@@ -159,17 +221,39 @@ def main():
     print("🔑 persistent context + alert 自動處理\n")
 
     with sync_playwright() as p:
-        print("🚀 啟動瀏覽器...")
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
-            headless=False,
-            viewport={"width": 1920, "height": 1080},
-            accept_downloads=True,
-        )
+        # 嘗試使用 Edge（支援 ActiveX/COM 憑證元件），若無則退回 Chromium
+        browser_channel = "msedge"
+        launch_args = [
+            "--disable-popup-blocking",
+            "--disable-features=PopupBlocker",
+        ]
+        try:
+            print("🚀 啟動瀏覽器（嘗試 Edge）...")
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(USER_DATA_DIR),
+                channel=browser_channel,
+                headless=False,
+                viewport={"width": 1920, "height": 1080},
+                accept_downloads=True,
+                args=launch_args,
+            )
+        except Exception as e:
+            print(f"⚠️ Edge 啟動失敗（{e}），改用 Chromium...")
+            browser_channel = "chromium"
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(USER_DATA_DIR),
+                headless=False,
+                viewport={"width": 1920, "height": 1080},
+                accept_downloads=True,
+                args=launch_args,
+            )
+        print(f"   ✅ 使用瀏覽器: {browser_channel}")
 
         context.on("page", on_popup)
+        # 用 context.on("dialog") 處理所有頁面（含 iframe）的 alert
+        context.on("dialog", on_dialog)
+
         page = context.pages[0] if context.pages else context.new_page()
-        page.on("dialog", on_dialog)
 
         try:
             print(f"🌐 開啟: {LOGIN_URL}")
@@ -223,13 +307,19 @@ def main():
             # 持股
             print("\n📊 導航到「持股明細」頁面")
             input("   👉 到達後按 Enter...")
-            page.screenshot(path=str(OUTPUT_DIR / "holdings.png"))
+            try:
+                page.screenshot(path=str(OUTPUT_DIR / "holdings.png"))
+            except Exception:
+                pass
             holdings = capture_all_tables(page)
 
             # 交易
             print("\n📜 導航到「交易紀錄」頁面")
             input("   👉 到達後按 Enter...")
-            page.screenshot(path=str(OUTPUT_DIR / "transactions.png"))
+            try:
+                page.screenshot(path=str(OUTPUT_DIR / "transactions.png"))
+            except Exception:
+                pass
             transactions = capture_all_tables(page)
 
             # 儲存
@@ -255,7 +345,10 @@ def main():
             print("\n⚠️ 中斷")
         except Exception as e:
             print(f"\n❌ 錯誤: {e}")
-            page.screenshot(path=str(OUTPUT_DIR / "error.png"))
+            try:
+                page.screenshot(path=str(OUTPUT_DIR / "error.png"))
+            except Exception:
+                pass
         finally:
             context.close()
             print("\n🔒 已關閉（profile 已保存）")
