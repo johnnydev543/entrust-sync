@@ -19,13 +19,13 @@ Alert 流程：
 
 import json
 import os
-import re
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
+from inventory_export import convert_inventory_xls, inventory_item_from_values
 from playwright.sync_api import sync_playwright
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -147,20 +147,6 @@ def capture_all_tables(page) -> list[dict]:
 def capture_aggregate_inventory(page) -> list[dict]:
     """擷取「證券彙總庫存查詢」的 25 欄明細，轉成穩定欄位。"""
     positions = {}
-    groups = [
-        ("depository", 1),
-        ("odd_lot", 7),
-        ("margin", 13),
-        ("short", 19),
-    ]
-    fields = ["previous", "buy_order", "buy_filled", "sell_order", "sell_filled", "current"]
-
-    def number(value):
-        value = value.strip().replace(",", "")
-        try:
-            return int(value) if value else 0
-        except ValueError:
-            return value
 
     for frame in page.frames:
         try:
@@ -170,18 +156,9 @@ def capture_aggregate_inventory(page) -> list[dict]:
                     if len(cells) != 25:
                         continue
                     values = [(cell.inner_text() or "").strip() for cell in cells]
-                    match = re.search(r"\(([^()]+)\)\s*$", values[0])
-                    if not match:
-                        continue
-                    code = match.group(1)
-                    name = re.sub(r"^\*|\*?\([^()]+\)\s*$", "", values[0]).strip("*")
-                    item = {"code": code, "name": name}
-                    for group, start in groups:
-                        item[group] = {
-                            field: number(values[start + offset])
-                            for offset, field in enumerate(fields)
-                        }
-                    positions[code] = item
+                    item = inventory_item_from_values(values)
+                    if item:
+                        positions[item["code"]] = item
         except Exception:
             pass
 
@@ -208,6 +185,9 @@ def download_aggregate_inventory_xls(page):
                 filepath = OUTPUT_DIR / f"aggregate_inventory_{date.today().isoformat()}{suffix}"
                 download.save_as(str(filepath))
                 print(f"   📥 庫存 XLS 已存: {filepath}")
+                json_path, csv_path, data = convert_inventory_xls(filepath)
+                print(f"   ✅ 已轉成 UTF-8 JSON（{len(data)} 筆）: {json_path}")
+                print(f"   ✅ 已轉成 UTF-8 CSV: {csv_path}")
                 return filepath
             except Exception:
                 continue
