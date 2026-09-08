@@ -44,93 +44,22 @@ def on_dialog(dialog):
 
 
 def on_popup(new_page):
-    """攔截彈出視窗，立即關閉不需要的 popup"""
+    """以非阻塞方式記錄彈出視窗，不干預網站的登入與憑證流程。"""
     print(f"   🪟 [Popup] 新視窗！")
 
-    # 記錄初始 URL
     try:
         initial_url = new_page.url
         print(f"      初始 URL: {initial_url or '(空白)'}")
     except Exception:
-        initial_url = ""
-
-    # 立即判斷是否需要關閉 — 不等待載入，避免觸發 dialog 導致 debugger paused
-    should_close = False
-    close_reason = ""
-
-    if "TransPage" in (initial_url or ""):
-        should_close = True
-        close_reason = "TransPage.aspx"
-    elif "ElectricCA" in (initial_url or "") or "CertCaApply" in (initial_url or ""):
-        should_close = True
-        close_reason = "憑證申請頁面"
-    elif not initial_url or initial_url.lower() == "about:blank":
-        # about:blank — 稍後再判斷
-        pass
-
-    if should_close:
-        print(f"      🔄 立即關閉 popup: {close_reason}")
-        try:
-            new_page.close()
-        except Exception:
-            pass
         return
 
-    # 對於不確定的頁面，等待一小段時間
-    try:
-        new_page.wait_for_load_state("domcontentloaded", timeout=3000)
-    except Exception:
-        pass
+    # page 事件發生時通常仍是 about:blank。只監聽後續導航，不能在事件
+    # callback 中等待或關閉視窗，否則可能打斷網站的 session 轉接。
+    def log_navigation(frame):
+        if frame == new_page.main_frame:
+            print(f"      導航至: {frame.url or '(空白)'}")
 
-    url = ""
-    title = ""
-    try:
-        url = new_page.url
-        title = new_page.title()
-    except Exception:
-        print(f"      ⚠️ 頁面已關閉")
-        return
-
-    print(f"      URL: {url or '(空白)'}")
-    print(f"      標題: {title or '(空白)'}")
-
-    # 再次判斷
-    if "TransPage" in (url or ""):
-        print(f"      🔄 關閉 popup: TransPage.aspx")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-    elif "ElectricCA" in (url or "") or "CertCaApply" in (url or ""):
-        print(f"      🔄 關閉 popup: 憑證申請頁面")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-    elif not url or url.lower() == "about:blank":
-        print(f"      🔄 關閉空白頁面")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-
-    # 保留有意義的頁面
-    ts = time.strftime("%H%M%S")
-    try:
-        new_page.screenshot(path=str(OUTPUT_DIR / f"popup_{ts}.png"))
-        print(f"      📸 截圖: popup_{ts}.png")
-    except Exception as e:
-        print(f"      ⚠️ 截圖失敗: {e}")
-    try:
-        html = new_page.content()
-        with open(OUTPUT_DIR / f"popup_{ts}.html", "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"      📄 HTML 已存 ({len(html)} chars)")
-    except Exception as e:
-        print(f"      ⚠️ 無法讀取內容: {e}")
+    new_page.on("framenavigated", log_navigation)
 
 
 def load_credentials() -> tuple[str, str]:
@@ -203,7 +132,7 @@ def capture_all_tables(page) -> list[dict]:
 def main():
     global alert_log
 
-    parser = argparse.ArgumentParser(description="華南永昌持股同步 v4")
+    parser = argparse.ArgumentParser(description="華南永昌持股同步 v5")
     parser.add_argument("--auto", action="store_true", help="自動填入帳密")
     parser.add_argument("--debug", action="store_true", help="除錯模式")
     args = parser.parse_args()
@@ -216,9 +145,9 @@ def main():
             sys.exit(1)
         print(f"   ✓ 帳號: {account[:3]}***")
 
-    print("\n🏦 華南永昌持股同步 v4")
+    print("\n🏦 華南永昌持股同步 v5")
     print("=" * 40)
-    print("🔑 persistent context + alert 自動處理\n")
+    print("🔑 addInitScript 攔截 alert + persistent context\n")
 
     with sync_playwright() as p:
         # 嘗試使用 Edge（支援 ActiveX/COM 憑證元件），若無則退回 Chromium
@@ -226,6 +155,7 @@ def main():
         launch_args = [
             "--disable-popup-blocking",
             "--disable-features=PopupBlocker",
+            "--disable-blink-features=AutomationControlled",
         ]
         try:
             print("🚀 啟動瀏覽器（嘗試 Edge）...")
@@ -248,6 +178,33 @@ def main():
                 args=launch_args,
             )
         print(f"   ✅ 使用瀏覽器: {browser_channel}")
+
+        # ── 注入 addInitScript：在每個頁面載入前覆蓋 alert/confirm ──
+        context.add_init_script("""
+            // 客戶專區會在 navigator.webdriver 為 true 時移除 ElectricCA
+            // 等功能路由，結果看起來像站方 404。
+            Object.defineProperty(Navigator.prototype, 'webdriver', {
+                get: () => false,
+                configurable: true
+            });
+            window.alert = function(msg) {
+                console.log('[ALERT BLOCKED] ' + String(msg));
+                return undefined;
+            };
+            window.confirm = function(msg) {
+                console.log('[CONFIRM BLOCKED] ' + String(msg));
+                return true;
+            };
+            const __originalOpen = window.open;
+            window.open = function(...args) {
+                const url = args[0] || '';
+                console.log('[WINDOW.OPEN] ' + url);
+                // 純記錄，不阻擋任何視窗。登入、session 轉接與憑證頁都可能
+                // 依賴 window.open 回傳的 Window 物件。
+                return __originalOpen.apply(this, args);
+            };
+        """)
+        print("   ✅ addInitScript 已注入（alert/confirm/window.open 覆蓋）")
 
         context.on("page", on_popup)
         # 用 context.on("dialog") 處理所有頁面（含 iframe）的 alert

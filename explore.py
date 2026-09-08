@@ -1,25 +1,30 @@
 #!/usr/bin/env python3
 """
-華南永昌持股同步 — 探索模式 v4
+華南永昌持股同步 — 探索模式 v5
 ===================================
 
-v4 改進：
-- 自動處理 JavaScript alert（錯誤 5010、憑證提示等）
-- 憑證 popup window：嘗試攔截並截圖分析
+v5 改進：
+- 自動填入帳號密碼（從 .env 讀取）
+- addInitScript 自動攔截 alert/confirm（頁面載入前就注入）
+- 以非阻塞方式記錄 popup，不干預登入與憑證流程
+- 驗證碼仍需手動輸入（提示使用者）
 - persistent context：憑證只需安裝一次
 
 Alert 流程：
-  1. Alert: 錯誤代碼 5010 → 自動按 OK
-  2. Alert: 您尚未下載憑證 → 自動按 OK
-  3. Popup window（無 URL）→ 截圖 + 存 HTML 供分析
+  1. addInitScript 在每個頁面載入前覆蓋 window.alert/confirm
+  2. Alert: 錯誤代碼 5010 → 自動吞掉（console.log）
+  3. Alert: 您尚未下載憑證 → 自動吞掉
+  4. Popup window → 僅記錄，不干預網站流程
 """
 
 import json
+import os
 import sys
 import time
 from datetime import date
 from pathlib import Path
 
+from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -53,106 +58,22 @@ def on_dialog(dialog):
 
 
 def on_page_created(new_page):
-    """攔截新開的視窗，立即關閉不需要的 popup"""
+    """以非阻塞方式記錄新視窗，不干預網站的登入與憑證流程。"""
     print(f"   🪟 [Popup] 新視窗開啟！")
 
-    # 記錄初始 URL
     try:
         initial_url = new_page.url
         print(f"      初始 URL: {initial_url or '(空白)'}")
     except Exception:
-        initial_url = ""
-
-    # 判斷是否需要關閉 — 基於初始 URL 立即判斷，不等待載入
-    # 這是關鍵：等待載入會觸發 dialog，導致 "debugger paused"
-    should_close = False
-    close_reason = ""
-
-    if "TransPage" in (initial_url or ""):
-        should_close = True
-        close_reason = "TransPage.aspx（交易過渡頁）"
-    elif "ElectricCA" in (initial_url or "") or "CertCaApply" in (initial_url or ""):
-        should_close = True
-        close_reason = "憑證申請頁面"
-    elif not initial_url or initial_url.lower() == "about:blank":
-        # about:blank — 先不關閉，等一下看是否導航到其他 URL
-        pass
-
-    if should_close:
-        print(f"      🔄 立即關閉 popup: {close_reason}")
-        try:
-            new_page.close()
-        except Exception as e:
-            print(f"      ⚠️ 關閉失敗: {e}")
         return
 
-    # 對於不確定的頁面，等待一小段時間看 URL 變化
-    try:
-        new_page.wait_for_load_state("domcontentloaded", timeout=3000)
-    except Exception:
-        pass
+    # page 事件發生時通常仍是 about:blank。只監聽後續導航，不能在事件
+    # callback 中等待或關閉視窗，否則可能打斷網站的 session 轉接。
+    def log_navigation(frame):
+        if frame == new_page.main_frame:
+            print(f"      導航至: {frame.url or '(空白)'}")
 
-    try:
-        new_page.wait_for_timeout(1000)
-    except Exception:
-        pass
-
-    url = ""
-    title = ""
-    try:
-        url = new_page.url
-        title = new_page.title()
-    except Exception:
-        # 頁面可能已被關閉
-        print(f"      ⚠️ 頁面已關閉")
-        return
-
-    print(f"      載入後 URL: {url or '(空白)'}")
-    print(f"      標題: {title or '(空白)'}")
-
-    # 再次判斷是否需要關閉
-    if "TransPage" in (url or ""):
-        print(f"      🔄 關閉 popup: TransPage.aspx")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-    elif "ElectricCA" in (url or "") or "CertCaApply" in (url or ""):
-        print(f"      🔄 關閉 popup: 憑證申請頁面")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-    elif not url or url.lower() == "about:blank":
-        # 空白頁面 — 關閉它
-        print(f"      🔄 關閉空白頁面")
-        try:
-            new_page.close()
-        except Exception:
-            pass
-        return
-
-    # 如果到這裡，頁面是有意義的，保留它
-    print(f"      💡 保留此視窗")
-
-    # 截圖和存 HTML
-    ts = time.strftime("%H%M%S")
-    try:
-        new_page.screenshot(path=str(OUTPUT_DIR / f"popup_{ts}.png"))
-        print(f"      📸 截圖: popup_{ts}.png")
-    except Exception as e:
-        print(f"      ⚠️ 截圖失敗: {e}")
-
-    try:
-        html = new_page.content()
-        html_path = OUTPUT_DIR / f"popup_{ts}.html"
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html)
-        print(f"      📄 HTML 已存: popup_{ts}.html ({len(html)} chars)")
-    except Exception as e:
-        print(f"      ⚠️ 無法讀取內容: {e}")
+    new_page.on("framenavigated", log_navigation)
 
 
 def capture_all_tables(page) -> list[dict]:
@@ -247,18 +168,25 @@ def main():
     global alert_log
 
     print()
-    print("🏦 華南永昌持股同步 — 探索模式 v4")
+    # 讀取 .env 帳密
+    load_dotenv(SCRIPT_DIR / ".env")
+    account = os.getenv("ENTRUST_ACCOUNT", "")
+    password = os.getenv("ENTRUST_PASSWORD", "")
+
+    print("🏦 華南永昌持股同步 — 探索模式 v5")
     print("=" * 45)
     print()
-    print("🔑 v4 改進：")
-    print("   ✅ 自動處理 alert（5010 錯誤、憑證提示）")
-    print("   ✅ 攔截並分析 popup window")
+    print("🔑 v5 改進：")
+    print("   ✅ addInitScript 自動攔截 alert/confirm（頁面載入前注入）")
+    print("   ✅ 以非阻塞方式記錄 popup")
+    print("   ✅ 自動填入帳號密碼（從 .env 讀取）")
     print("   ✅ persistent context（憑證只需裝一次）")
+    if account:
+        print(f"   ✅ 帳號: {account[:3]}***（已從 .env 讀取）")
+    else:
+        print("   ⚠️ 未設定 .env，帳密需手動輸入")
     print()
-    print("⚠️ 憑證 popup 如果沒有 URL：")
-    print("   → 腳本會截圖存 HTML")
-    print("   → 如果是 Windows 元件，需要手動操作")
-    print("   → 操作完後回到終端按 Enter 即可")
+    print("⚠️ 驗證碼仍需手動輸入")
     print()
 
     steps = [
@@ -273,6 +201,7 @@ def main():
         launch_args = [
             "--disable-popup-blocking",
             "--disable-features=PopupBlocker",
+            "--disable-blink-features=AutomationControlled",
         ]
         try:
             print("🚀 啟動瀏覽器（嘗試 Edge / persistent context）...")
@@ -296,6 +225,38 @@ def main():
             )
         print(f"   ✅ 使用瀏覽器: {browser_channel}")
 
+        # ── 注入 addInitScript：在每個頁面載入前覆蓋 alert/confirm ──
+        # 這是關鍵：addInitScript 會在頁面的任何 JS 執行前就注入
+        # 比 page.evaluate() 更可靠，因為它不會被頁面導航清除
+        context.add_init_script("""
+            // 客戶專區會在 navigator.webdriver 為 true 時移除 ElectricCA
+            // 等功能路由，結果看起來像站方 404。
+            Object.defineProperty(Navigator.prototype, 'webdriver', {
+                get: () => false,
+                configurable: true
+            });
+            // 覆蓋 window.alert — 自動吞掉，記錄到 console
+            window.alert = function(msg) {
+                console.log('[ALERT BLOCKED] ' + String(msg));
+                return undefined;
+            };
+            // 覆蓋 window.confirm — 自動按確定
+            window.confirm = function(msg) {
+                console.log('[CONFIRM BLOCKED] ' + String(msg));
+                return true;
+            };
+            // 覆蓋 window.open — 阻擋不需要的 popup
+            const __originalOpen = window.open;
+            window.open = function(...args) {
+                const url = args[0] || '';
+                console.log('[WINDOW.OPEN] ' + url);
+                // 純記錄，不阻擋任何視窗。登入、session 轉接與憑證頁都可能
+                // 依賴 window.open 回傳的 Window 物件。
+                return __originalOpen.apply(this, args);
+            };
+        """)
+        print("   ✅ addInitScript 已注入（alert/confirm/window.open 覆蓋）")
+
         # ── 註冊事件處理器 ──
         context.on("page", on_page_created)
         # 用 context.on("dialog") 處理所有頁面（含 iframe）的 alert
@@ -311,8 +272,45 @@ def main():
             print(f"   頁面: {page.url[:80]}")
             print(f"   標題: {page.title()}")
 
+            # ── 自動填入帳號密碼 ──
+            if account and password:
+                print("\n   🔑 自動填入帳號密碼...")
+                try:
+                    # 帳號
+                    for sel in ['input[name="txtLoginID"]', 'input[id="txtLoginID"]',
+                                'input[placeholder*="身分證"]', 'input[type="text"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=2000):
+                                el.click()
+                                el.fill(account)
+                                print(f"      ✅ 帳號已填入")
+                                break
+                        except Exception:
+                            continue
+
+                    # 密碼
+                    for sel in ['input[name="password"]', 'input[type="password"]']:
+                        try:
+                            el = page.locator(sel).first
+                            if el.is_visible(timeout=2000):
+                                el.click()
+                                el.fill(password)
+                                print(f"      ✅ 密碼已填入")
+                                break
+                        except Exception:
+                            continue
+
+                    print("   ⚠️ 請手動輸入驗證碼，然後按登入")
+                except Exception as e:
+                    print(f"   ⚠️ 自動填入失敗: {e}")
+                    print("   💡 請手動輸入帳號密碼和驗證碼")
+            else:
+                print("\n   ⚠️ 未設定 .env，請手動輸入帳號密碼和驗證碼")
+
             # 注入 window.open 攔截器（不干擾原始行為，只記錄）
-            print("\n   🔧 注入 window.open 攔截器...")
+            # 注意：addInitScript 已經覆蓋了 window.open，這裡只記錄
+            print("\n   🔧 注入 popup 記錄器...")
             try:
                 page.evaluate("""() => {
                     const originalOpen = window.open;
