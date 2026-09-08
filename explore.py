@@ -19,6 +19,7 @@ Alert 流程：
 
 import json
 import os
+import re
 import sys
 import time
 from datetime import date
@@ -141,6 +142,77 @@ def capture_all_tables(page) -> list[dict]:
             pass
 
     return tables_data
+
+
+def capture_aggregate_inventory(page) -> list[dict]:
+    """擷取「證券彙總庫存查詢」的 25 欄明細，轉成穩定欄位。"""
+    positions = {}
+    groups = [
+        ("depository", 1),
+        ("odd_lot", 7),
+        ("margin", 13),
+        ("short", 19),
+    ]
+    fields = ["previous", "buy_order", "buy_filled", "sell_order", "sell_filled", "current"]
+
+    def number(value):
+        value = value.strip().replace(",", "")
+        try:
+            return int(value) if value else 0
+        except ValueError:
+            return value
+
+    for frame in page.frames:
+        try:
+            for table in frame.locator("table").all():
+                for row in table.locator("tr").all():
+                    cells = row.locator(":scope > td").all()
+                    if len(cells) != 25:
+                        continue
+                    values = [(cell.inner_text() or "").strip() for cell in cells]
+                    match = re.search(r"\(([^()]+)\)\s*$", values[0])
+                    if not match:
+                        continue
+                    code = match.group(1)
+                    name = re.sub(r"^\*|\*?\([^()]+\)\s*$", "", values[0]).strip("*")
+                    item = {"code": code, "name": name}
+                    for group, start in groups:
+                        item[group] = {
+                            field: number(values[start + offset])
+                            for offset, field in enumerate(fields)
+                        }
+                    positions[code] = item
+        except Exception:
+            pass
+
+    return list(positions.values())
+
+
+def download_aggregate_inventory_xls(page):
+    """點擊彙總庫存匯出按鈕，將站方 XLS 永久保存到 output。"""
+    for frame in page.frames:
+        if "TS0106.aspx" not in frame.url:
+            continue
+        for selector in [
+            'input[type="image"][src*="export" i]',
+            'img[src*="export" i]',
+        ]:
+            try:
+                button = frame.locator(selector).first
+                if not button.is_visible(timeout=1000):
+                    continue
+                with page.expect_download(timeout=30_000) as download_info:
+                    button.click()
+                download = download_info.value
+                suffix = Path(download.suggested_filename).suffix or ".xls"
+                filepath = OUTPUT_DIR / f"aggregate_inventory_{date.today().isoformat()}{suffix}"
+                download.save_as(str(filepath))
+                print(f"   📥 庫存 XLS 已存: {filepath}")
+                return filepath
+            except Exception:
+                continue
+    print("   ⚠️ 找不到庫存 XLS 匯出按鈕，或下載未開始")
+    return None
 
 
 def save_step(step_name: str, page, tables_data: list[dict]):
@@ -467,6 +539,15 @@ def main():
                         print(f"      [{a['type']}] {a['message'][:150]}")
 
                 save_step(step_name, page, tables)
+                if step_name == "holdings":
+                    inventory = capture_aggregate_inventory(page)
+                    inventory_path = OUTPUT_DIR / f"aggregate_inventory_{date.today().isoformat()}.json"
+                    with open(inventory_path, "w", encoding="utf-8") as f:
+                        json.dump({"date": date.today().isoformat(),
+                                   "source": "華南永昌證券",
+                                   "positions": inventory}, f, ensure_ascii=False, indent=2)
+                    print(f"   💾 已存: {inventory_path}（{len(inventory)} 筆）")
+                    download_aggregate_inventory_xls(page)
                 try:
                     all_results[step_name] = {
                         "url": page.url,
