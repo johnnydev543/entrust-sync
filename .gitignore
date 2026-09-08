@@ -1,4 +1,4 @@
-.venv
+.venv/
 output/
 browser_profile/
 session/
@@ -7,4 +7,3 @@ __pycache__/
 *.png
 *.html
 .env
-settings.json

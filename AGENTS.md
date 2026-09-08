@@ -22,15 +22,21 @@ python3 debug_popup.py                   # popup 除錯工具，寫 debug_events
 
 ## 架構
 
-三支獨立腳本，皆為扁平函式 + 模組全域變數（無 class、無共用模組）：
+入口腳本（扁平函式）+ `entrust/` 共用套件：
 
 | 檔案 | 用途 |
 |---|---|
-| `entrust_sync.py` | 自動模式：argparse（`--auto`、`--debug`）、自動填帳密、抓持股與交易明細 |
-| `explore.py` | 探索模式：同樣抓取邏輯，另注入 popup logger、逐步截圖、寫 `full_sync_*.json` |
-| `debug_popup.py` | 診斷 popup 空白問題：攔截 `window.open`/dialog/response 事件 |
+| `entrust_sync.py` | 自動模式入口：argparse（`--auto`、`--debug`）、自動填帳密、抓持股與交易明細 |
+| `explore.py` | 探索模式入口：popup 記錄、多視窗截圖、`save_step`、寫 `full_sync_*.json` |
+| `debug_popup.py` | 診斷 popup 空白問題：攔截 `window.open`/dialog/response 事件（**刻意不共用**，診斷工具不注入 init script） |
+| `entrust/config.py` | 共用常數：`SCRIPT_DIR`、`OUTPUT_DIR`、`USER_DATA_DIR`、`LOGIN_URL`、`DEFAULT_TIMEOUT`、`LAUNCH_ARGS` |
+| `entrust/handlers.py` | `on_dialog`（自動 accept）、`on_popup`（非阻塞記錄）、`alert_log`、`reset_alert_log` |
+| `entrust/capture.py` | `capture_all_tables`、`capture_aggregate_inventory`、`download_aggregate_inventory_xls`、`save_step` |
+| `entrust/browser.py` | `launch_browser()`：Edge→Chromium fallback + `add_init_script`（webdriver 偽裝、alert/confirm/window.open 覆蓋）+ handler 註冊 |
+| `entrust/login.py` | `load_credentials`、`fill_credentials`、`click_login_button`（fallback chain selector） |
+| `inventory_export.py` | 站方 XLS → UTF-8 JSON/CSV 轉換（與 entrust/ 平行的獨立模組） |
 
-共用邏輯（`capture_all_tables`、dialog/popup handler、launch/init-script 區塊）在**三個檔案中是複製貼上的副本**——修改其中一個必須同步其他兩個，或先重構成共用模組。
+修改共用行為（selector、popup 處理、init script、表格擷取）一律改 `entrust/` 內的模組，**不要改回複製貼上**。
 
 輸出檔名慣例：`name_YYYY-MM-DD.json`（`date.today().isoformat()`）、截圖用 `HHMMSS`。`output/` 與 `browser_profile/` 皆在 `.gitignore` 中。
 
