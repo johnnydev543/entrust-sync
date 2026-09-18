@@ -15,6 +15,37 @@ GROUPS = [
     ("short", 19),
 ]
 FIELDS = ["previous", "buy_order", "buy_filled", "sell_order", "sell_filled", "current"]
+GROUP_UNITS = {
+    "depository": "lot",
+    "odd_lot": "share",
+    "margin": "lot",
+    "short": "lot",
+}
+
+
+def enrich_inventory_item(item: dict) -> dict:
+    """補上單位與股數換算，避免把零股 500 誤認為 500 張。"""
+    for group, unit in GROUP_UNITS.items():
+        values = item.get(group)
+        if isinstance(values, dict):
+            values["unit"] = unit
+
+    def current(group):
+        value = item.get(group, {}).get("current", 0)
+        return value if isinstance(value, int) else 0
+
+    cash_shares = current("depository") * 1000 + current("odd_lot")
+    margin_shares = current("margin") * 1000
+    short_shares = current("short") * 1000
+    item["share_summary"] = {
+        "cash_shares": cash_shares,
+        "margin_shares": margin_shares,
+        "short_shares": short_shares,
+        "long_shares": cash_shares + margin_shares,
+        "net_shares": cash_shares + margin_shares - short_shares,
+        "unit": "share",
+    }
+    return item
 
 
 def inventory_item_from_values(values: list[str]):
@@ -41,7 +72,7 @@ def inventory_item_from_values(values: list[str]):
             field: number(values[start + offset])
             for offset, field in enumerate(FIELDS)
         }
-    return item
+    return enrich_inventory_item(item)
 
 
 class _TableDataParser(HTMLParser):

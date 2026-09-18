@@ -1,8 +1,7 @@
 """華南永昌證券同步 — 共用模組。
 
-三支腳本（entrust_sync.py / explore.py / debug_popup.py）原本各自持有
-一份複製貼上的邏輯（常數、alert/popup 處理、表格擷取、瀏覽器啟動）。
-此套件把它們收斂成單一來源；各腳本只保留自己的流程差異。
+互動同步程式與 popup 診斷工具共用常數、alert/popup 處理、表格擷取與
+瀏覽器啟動邏輯，避免 selector 與憑證流程在不同入口間漂移。
 
 搬移原則：逐字搬移、不改行為（見 AGENTS.md 關鍵規則 3–5）。
 """
@@ -18,6 +17,7 @@ from entrust.config import (
     DEFAULT_TIMEOUT,
     LAUNCH_ARGS,
     LOGIN_URL,
+    MAIN_URL,
     OUTPUT_DIR,
     SCRIPT_DIR,
     USER_DATA_DIR,
@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_TIMEOUT",
     "LAUNCH_ARGS",
     "LOGIN_URL",
+    "MAIN_URL",
     "OUTPUT_DIR",
     "SCRIPT_DIR",
     "USER_DATA_DIR",

@@ -8,6 +8,7 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 USER_DATA_DIR = SCRIPT_DIR / "browser_profile"
 
 LOGIN_URL = "https://eztrade.entrust.com.tw/hnsweb/loginnew.aspx"
+MAIN_URL = "https://eztrade.entrust.com.tw/hnsweb/default.aspx"
 DEFAULT_TIMEOUT = 30_000
 
 LAUNCH_ARGS = [

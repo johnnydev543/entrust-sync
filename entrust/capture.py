@@ -123,7 +123,7 @@ def download_aggregate_inventory_xls(page):
 
 
 def save_step(step_name: str, page, tables_data: list[dict], alerts: list[dict]):
-    """儲存單一步驟（explore.py 用的含 url/title 版本）。
+    """儲存單一步驟的 url、title、表格與 alert 紀錄。
 
     alerts 由呼叫端傳入該步驟的 alert_log.copy()，避免模組狀態耦合。
     """

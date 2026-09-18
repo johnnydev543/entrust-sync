@@ -13,61 +13,28 @@ if [ ! -x "$PYTHON" ]; then
     exit 1
 fi
 
-# 檢查 playwright
+# 首次安裝 Playwright 時一併準備 Chromium
 if ! "$PYTHON" -c "import playwright" 2>/dev/null; then
     echo "📦 安裝依賴..."
     "$PYTHON" -m pip install -r requirements.txt
     echo "📦 安裝 Chromium..."
     "$PYTHON" -m playwright install chromium
+elif ! "$PYTHON" -c "import fastapi, uvicorn, dotenv" 2>/dev/null; then
+    echo "📦 安裝 API 依賴..."
+    "$PYTHON" -m pip install -r requirements.txt
 fi
-
-check_browser_profile_available() {
-    if pgrep -f -- "--user-data-dir=$SCRIPT_DIR/browser_profile" >/dev/null 2>&1; then
-        echo "❌ 上一次同步程序仍在背景執行，無法再次開啟同一個 browser_profile。"
-        echo "   只關閉瀏覽器視窗不會結束正在等待輸入的程序。"
-        echo "   請回到上一次執行的終端按 Ctrl+C，再重新執行 ./run.sh。"
-        exit 1
-    fi
-}
 
 mkdir -p output
 
-echo ""
-echo "🏦 華南永昌持股同步"
-echo "========================"
-echo ""
-echo "選擇模式："
-echo "  1) 探索模式（登入後自行選擇要擷取的頁面）"
-echo "  2) 自動模式（有設定 .env 時自動填入帳密）"
-echo "  3) 清除瀏覽器 profile（重新來過）"
-echo ""
-read -p "請選擇 [1/2/3]: " choice
-
-case $choice in
-    1)
-        check_browser_profile_available
-        "$PYTHON" explore.py
-        ;;
-    2)
-        if [ ! -f .env ]; then
-            echo "⚠️ 找不到 .env"
-            echo "   cp .env.example .env  # 然後填入帳密"
-            exit 1
-        fi
-        check_browser_profile_available
-        "$PYTHON" entrust_sync.py --auto
-        ;;
-    3)
+if [ "${1:-}" = "reset" ]; then
         echo "⚠️ 這會刪除瀏覽器 profile（含憑證）"
         read -p "確定嗎？ [y/N]: " confirm
         if [ "$confirm" = "y" ] || [ "$confirm" = "Y" ]; then
             rm -rf browser_profile/
             echo "✅ 已清除"
         fi
-        ;;
-    *)
-        echo "啟動探索模式..."
-        check_browser_profile_available
-        "$PYTHON" explore.py
-        ;;
-esac
+        exit 0
+fi
+
+echo "🏦 啟動華南永昌資料 API 與登入瀏覽器"
+"$PYTHON" api_server.py

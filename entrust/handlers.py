@@ -1,6 +1,4 @@
-"""alert/popup 事件處理（entrust_sync.py 的 on_dialog/on_popup 與
-explore.py 的 on_dialog/on_page_created 收斂版；explore 版多記的
-time 欄位統一保留在 alert_log 中，不影響行為）。"""
+"""互動同步與診斷工具共用的 alert/popup 事件處理。"""
 
 import time
 
