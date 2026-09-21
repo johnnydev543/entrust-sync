@@ -68,6 +68,8 @@ API 預設只監聽本機 `http://127.0.0.1:8000`，互動文件位於
 | `GET /api/v1/dates` | 列出持股與交易的可查詢日期 |
 | `GET /api/v1/statements/today` | 自動查詢當日對帳單；可選填 `stock_code` |
 | `GET /api/v1/statements/history` | 自動查詢歷史對帳單；必填 `date_from`、`date_to`，可選填 `stock_code` |
+| `GET /api/v1/statements/history/full` | 自動分段取得最近兩年的完整對帳單 |
+| `GET /api/v1/portfolio/opening-inventory` | 以現有庫存與後續成交反推指定日期的期初現股數量 |
 | `GET /api/v1/inventory` | 自動查詢彙總庫存 |
 | `GET /api/v1/profit-loss/unrealized` | 自動查詢未實現損益；可選填 `stock_code` |
 | `GET /api/v1/profit-loss/realized` | 自動查詢已實現損益；可選填 `stock_code` |
@@ -156,6 +158,8 @@ GET /api/v1/statements/today
 GET /api/v1/statements/today?stock_code=2330
 GET /api/v1/statements/history?date_from=2026-08-01&date_to=2026-09-18
 GET /api/v1/statements/history?date_from=2026-08-01&date_to=2026-09-18&stock_code=2330
+GET /api/v1/statements/history/full?date_from=2025-09-01&date_to=2026-09-21
+GET /api/v1/portfolio/opening-inventory?as_of=2025-09-01
 GET /api/v1/inventory
 GET /api/v1/profit-loss/unrealized
 GET /api/v1/profit-loss/unrealized?stock_code=2330
@@ -165,6 +169,8 @@ GET /api/v1/profit-loss/realized?stock_code=2330
 
 省略 `stock_code` 代表查詢全部股票。歷史查詢會在送往華南網站前驗證日期
 區間，避免超出站方「最近兩年、單次最多六個月」的限制。
+`history/full` 會自動處理六個月分段；`opening-inventory` 可精確反推
+期初數量，但若原始買進早於站方兩年上限，精確成本仍需其他資料來源。
 
 庫存資料的 `depository`、`margin`、`short` 單位為 `lot`（張），`odd_lot`
 單位為 `share`（股）。每筆庫存另有 `share_summary`，將整張乘以 1,000 後

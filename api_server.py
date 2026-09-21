@@ -22,11 +22,12 @@ from entrust.api_data import (
     get_transactions,
 )
 from entrust.live_sync import LoginRequiredError, NavigationError, browser_worker
+from entrust.portfolio import aggregate_statements, calculate_opening_inventory, history_windows
 
 
 load_dotenv(SCRIPT_DIR / ".env", override=False)
 API_TOKEN = os.getenv("ENTRUST_API_TOKEN", "")
-API_VERSION = "1.7.0"
+API_VERSION = "1.8.0"
 
 
 @asynccontextmanager
@@ -91,6 +92,34 @@ def _validate_history_range(date_from: str, date_to: str) -> tuple[str, str]:
     return date_from, date_to
 
 
+def _validate_full_history_range(date_from: str, date_to: str) -> tuple[date, date]:
+    try:
+        start = date.fromisoformat(date_from)
+        end = date.fromisoformat(date_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="日期格式必須是 YYYY-MM-DD") from exc
+    if start > end:
+        raise HTTPException(status_code=422, detail="date_from 不可晚於 date_to")
+    if (date.today() - start).days > 731:
+        raise HTTPException(status_code=422, detail="華南歷史對帳單僅提供最近兩年資料")
+    if end > date.today():
+        raise HTTPException(status_code=422, detail="date_to 不可晚於今日")
+    return start, end
+
+
+def _query_full_history(date_from: str, date_to: str, stock_code: Optional[str] = None) -> dict:
+    start, end = _validate_full_history_range(date_from, date_to)
+    chunks = []
+    for chunk_start, chunk_end in history_windows(start, end):
+        chunks.append(browser_worker.submit(
+            "statement_history",
+            date_from=chunk_start.isoformat(),
+            date_to=chunk_end.isoformat(),
+            stock_code=stock_code,
+        ))
+    return aggregate_statements(chunks, date_from, date_to)
+
+
 @app.get("/health", summary="檢查 API 狀態")
 @app.get("/api/v1/health", summary="檢查 API 狀態")
 def health():
@@ -131,6 +160,47 @@ def statement_history(
             date_from=date_from,
             date_to=date_to,
             stock_code=_validate_stock_code(stock_code),
+        )
+    except (LoginRequiredError, NavigationError, RuntimeError) as exc:
+        _browser_error(exc)
+
+
+@app.get(
+    "/api/v1/statements/history/full",
+    dependencies=[Depends(verify_token)],
+    summary="自動分段查詢最近兩年完整對帳單",
+)
+def statement_history_full(
+    date_from: str = Query(description="開始日期，YYYY-MM-DD"),
+    date_to: str = Query(description="結束日期，YYYY-MM-DD"),
+    stock_code: Optional[str] = Query(default=None, description="個股代號；省略時查詢全部股票"),
+):
+    try:
+        return _query_full_history(
+            date_from,
+            date_to,
+            _validate_stock_code(stock_code),
+        )
+    except (LoginRequiredError, NavigationError, RuntimeError) as exc:
+        _browser_error(exc)
+
+
+@app.get(
+    "/api/v1/portfolio/opening-inventory",
+    dependencies=[Depends(verify_token)],
+    summary="反推指定日期的期初庫存數量",
+)
+def opening_inventory(
+    as_of: str = Query(description="期初日期，YYYY-MM-DD"),
+):
+    try:
+        start, _ = _validate_full_history_range(as_of, date.today().isoformat())
+        current = browser_worker.submit("holdings")
+        history = _query_full_history(start.isoformat(), date.today().isoformat())
+        return calculate_opening_inventory(
+            current.get("positions", []),
+            history.get("entries", []),
+            start.isoformat(),
         )
     except (LoginRequiredError, NavigationError, RuntimeError) as exc:
         _browser_error(exc)
