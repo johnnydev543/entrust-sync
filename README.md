@@ -97,6 +97,8 @@ mkdir -p tls browser_profile output
 ```dotenv
 ENTRUST_API_TOKEN=<使用 openssl rand -hex 32 產生>
 ENTRUST_VNC_PASSWORD=<8 位英數密碼>
+ENTRUST_API_HOST=0.0.0.0
+ENTRUST_API_PORT=8888
 ```
 
 產生區網用自簽憑證；請將範例 IP 換成伺服器實際位址：
@@ -131,8 +133,10 @@ docker compose up -d --force-recreate
 - API：`https://<server-ip>:8888/docs`；受保護端點需要 Bearer Token。
 - 同機 agent：`./scripts/entrust-api /api/v1/inventory`。
 
-同一張 TLS 憑證同時保護 noVNC 與 API；FastAPI 僅在容器內部的 8889 埠提供
-HTTP，不會發布到主機。自簽憑證首次使用時不會被瀏覽器自動信任；可將
+同一張 TLS 憑證同時保護 noVNC 與 API。`ENTRUST_API_HOST` 與
+`ENTRUST_API_PORT` 控制主機對外綁定；nginx 在容器內接收 HTTPS，再轉送至
+僅監聽 `127.0.0.1:8889` 的 FastAPI，因此 8889 不會發布到主機。如需調整
+對外位址或連接埠，只需修改 `.env` 後重建容器。自簽憑證首次使用時不會被瀏覽器自動信任；可將
 `tls/novnc.crt` 匯入受信任裝置。不要把 `tls/`、`.env`、`browser_profile/`
 或 `output/` 提交到 Git。
 

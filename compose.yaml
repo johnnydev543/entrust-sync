@@ -11,6 +11,8 @@ services:
       - .env
     environment:
       DISPLAY: :99
+      # 容器內部 FastAPI HTTP：僅供同容器 nginx 存取，不直接對外發布。
+      # 對外 host/port 請修改 .env 的 ENTRUST_API_HOST / ENTRUST_API_PORT。
       ENTRUST_API_HOST: 127.0.0.1
       ENTRUST_API_PORT: 8889
     volumes:
@@ -19,6 +21,7 @@ services:
       - ./tls:/app/tls:ro
     ports:
       - "0.0.0.0:6080:6080"
-      - "0.0.0.0:8888:8888"
+      # .env host:port -> 容器 nginx HTTPS 8888 -> FastAPI HTTP 127.0.0.1:8889
+      - "${ENTRUST_API_HOST:-0.0.0.0}:${ENTRUST_API_PORT:-8888}:8888"
     security_opt:
       - no-new-privileges:true
