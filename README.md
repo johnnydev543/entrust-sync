@@ -4,23 +4,34 @@
 
 ## ⚠️ 安全提醒
 
-- 帳號與密碼只在華南登入頁由你手動輸入，程式不保存
+- 帳號與密碼只在華南登入頁由使用者手動輸入，程式不保存
 - OTP 一定手動輸入
 - 腳本只做**讀取**，不下單
-- 憑證保存在 `browser_profile/`，不會上傳
+- `browser_profile/` 可能含有敏感的登入與瀏覽器狀態，不會上傳
 
 ## 安裝
 
-目前已在 **macOS** 實際驗證可執行。程式本身使用 Python、Playwright 與
-FastAPI，沒有直接依賴 Windows ActiveX/COM。Linux 桌面與 Windows 的瀏覽器
-自動化理論上可用，但全新環境的憑證申請流程仍需個別驗證；此外目前的
-`run.sh` 是 macOS/Linux 使用的 Bash 腳本，Windows 原生 PowerShell/CMD
-需要 WSL、Git Bash 或另外的啟動腳本。
+本專案使用 Python、Playwright 與 FastAPI，沒有直接依賴 Windows
+ActiveX/COM。瀏覽器自動化程式可跨平台執行，但券商的首次憑證申請流程可能
+因作業系統、瀏覽器及憑證儲存方式而異。
+
+macOS／Linux：
 
 ```bash
 cd entrust-sync
-pip install -r requirements.txt
-playwright install chromium
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m playwright install chromium
+```
+
+Windows PowerShell：
+
+```powershell
+cd entrust-sync
+py -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m playwright install chromium
 ```
 
 ## 使用方式
@@ -29,7 +40,14 @@ playwright install chromium
 ./run.sh
 ```
 
-程式會同時啟動 API 與有頭瀏覽器。你只需要在瀏覽器手動完成帳密、OTP
+`run.sh` 適用於 macOS、Linux、WSL 與 Git Bash。Windows PowerShell 可直接
+執行：
+
+```powershell
+.\.venv\Scripts\python.exe api_server.py
+```
+
+程式會同時啟動 API 與有頭瀏覽器。使用者只需在瀏覽器手動完成帳密、OTP
 與憑證流程，不需要自行進入持股或交易頁。登入完成後，API 請求會跨 iframe
 自動開啟對應查詢頁、擷取最新資料並回傳。
 
@@ -54,15 +72,15 @@ API 文件位於 `http://127.0.0.1:8000/docs`。若要重設瀏覽器 profile，
 ./run.sh reset
 ```
 
-### 平台狀態
+### 平台相容性
 
-| 平台 | 狀態 |
-|---|---|
-| macOS | 已實際驗證可啟動、登入並查詢帳務資料 |
-| Windows | Python/Playwright 可跨平台，但目前需要 WSL、Git Bash 或另寫 PowerShell 啟動腳本 |
-| Linux 桌面 | 瀏覽器自動化理論上可用；首次憑證申請尚未驗證 |
+| 平台 | 啟動方式 | 注意事項 |
+|---|---|---|
+| macOS | `./run.sh` | 支援有頭 Edge／Chromium；憑證可能使用 Keychain |
+| Linux 桌面 | `./run.sh` | 需要圖形桌面；首次憑證申請依券商支援情況而定 |
+| Windows | PowerShell、WSL 或 Git Bash | 原生 PowerShell 直接執行 `api_server.py`；憑證可能使用 Windows 憑證儲存區 |
 
-「日常查詢可執行」不代表「全新電腦首次申請憑證」已在每個平台完成驗證。
+平台可啟動不代表券商的首次憑證申請已在所有作業系統與瀏覽器組合完成驗證。
 
 ## Session 有效期
 
@@ -104,8 +122,8 @@ API 在登入完成後會自動操作查詢頁；它不會代替使用者完成�
 
 ### 同一區網的其他裝置存取
 
-API 預設只接受這台 Mac 自己的連線。若要讓同一個 Wi-Fi／LAN 內的手機、
-電腦或 AI agent 存取，請依下列步驟啟動區網模式。
+API 預設只接受執行服務之裝置本身的連線。若要讓同一個 Wi-Fi／LAN 內的
+手機、電腦或 AI agent 存取，請依下列步驟啟動區網模式。
 
 1. 若尚未有 `.env`，先從範例建立：
 
@@ -131,16 +149,26 @@ openssl rand -hex 32
 3. 直接啟動；程式會自動載入專案根目錄的 `.env`：
 
 ```bash
-cd /Volumes/Kingston_1T/Codes/entrust-sync
+cd /path/to/entrust-sync
 ./run.sh
 ```
 
-若 macOS 詢問是否允許 Python 接收連線，請選擇允許。
+若作業系統防火牆詢問是否允許 Python 接收區網連線，請依實際網路環境決定
+是否允許；不應在公共網路開放此服務。
 
-4. 查詢 Mac 的區網 IP（Wi-Fi 通常是 `en0`）：
+4. 查詢執行服務之裝置的區網 IP。常用指令如下：
 
 ```bash
+# macOS（Wi-Fi 通常是 en0）
 ipconfig getifaddr en0
+
+# Linux
+hostname -I
+```
+
+```powershell
+# Windows PowerShell
+ipconfig
 ```
 
 假設結果是 `192.168.1.50`，其他裝置的 API 文件網址就是：
@@ -153,20 +181,20 @@ http://192.168.1.50:8000/docs
 
 ```bash
 curl \
-  -H "Authorization: Bearer 你的Token" \
+  -H "Authorization: Bearer <your-token>" \
   http://192.168.1.50:8000/api/v1/inventory
 ```
 
 在 Swagger 的端點測試畫面中，`authorization` 欄位需填入完整內容：
 
 ```text
-Bearer 你的Token
+Bearer <your-token>
 ```
 
 注意事項：
 
 - 只有同一 Wi-Fi／LAN 或彼此可路由的私人網路才能連線。
-- 訪客 Wi-Fi 常會開啟裝置隔離，因此可能無法連到 Mac。
+- 訪客 Wi-Fi 常會開啟裝置隔離，因此裝置之間可能無法互相連線。
 - 不要在路由器設定 port forwarding，也不要將 API 暴露到公開網路。
 - 不要把 `ENTRUST_API_TOKEN` 寫入 Git 或傳給不受信任的人。
 - 關閉終端或按 `Ctrl+C` 停止服務後，其他裝置便無法繼續存取。
