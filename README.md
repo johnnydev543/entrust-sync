@@ -11,6 +11,12 @@
 
 ## 安裝
 
+目前已在 **macOS** 實際驗證可執行。程式本身使用 Python、Playwright 與
+FastAPI，沒有直接依賴 Windows ActiveX/COM。Linux 桌面與 Windows 的瀏覽器
+自動化理論上可用，但全新環境的憑證申請流程仍需個別驗證；此外目前的
+`run.sh` 是 macOS/Linux 使用的 Bash 腳本，Windows 原生 PowerShell/CMD
+需要 WSL、Git Bash 或另外的啟動腳本。
+
 ```bash
 cd entrust-sync
 pip install -r requirements.txt
@@ -30,19 +36,33 @@ playwright install chromium
 API 文件位於 `http://127.0.0.1:8000/docs`。若要重設瀏覽器 profile，執行
 `./run.sh reset`；這會要求再次確認。
 
-## 重要：憑證視窗
+## 重要：憑證與瀏覽器 profile
 
-華南永昌的憑證申請視窗是 **Windows 元件**（ActiveX/COM），
-不是一般網頁彈出視窗，**沒有 URL，腳本無法自動操作**。
+華南永昌的憑證申請流程可能開啟新頁籤、瀏覽器外的原生視窗，或由系統／
+瀏覽器的憑證機制接手。這類介面不一定會出現在 Playwright 的 `page` 清單中，
+因此腳本不嘗試自動操作；使用者需手動完成帳密、OTP 與憑證步驟。
 
-解法：用 **persistent context**（`browser_profile/` 目錄），
-憑證只需安裝一次，之後每次啟動都會帶著。
+程式使用 **persistent context**（`browser_profile/` 目錄）保留 cookies、
+網站儲存狀態與瀏覽器設定，讓後續啟動可以重用已完成的登入環境。憑證私鑰
+也可能由作業系統 Keychain／憑證儲存區或網站的 WebCA 機制管理，因此不應
+假設所有憑證資料都只存在 `browser_profile/`。
 
-如果需要重新安裝憑證：
+`browser_profile/` 含有重要的登入與瀏覽器狀態，請勿手動刪除或修改。只有在
+確定需要重建環境，且願意重新完成登入與憑證流程時，才執行：
+
 ```bash
-rm -rf browser_profile/
-./run.sh  # 重新走一次憑證流程
+./run.sh reset
 ```
+
+### 平台狀態
+
+| 平台 | 狀態 |
+|---|---|
+| macOS | 已實際驗證可啟動、登入並查詢帳務資料 |
+| Windows | Python/Playwright 可跨平台，但目前需要 WSL、Git Bash 或另寫 PowerShell 啟動腳本 |
+| Linux 桌面 | 瀏覽器自動化理論上可用；首次憑證申請尚未驗證 |
+
+「日常查詢可執行」不代表「全新電腦首次申請憑證」已在每個平台完成驗證。
 
 ## Session 有效期
 
