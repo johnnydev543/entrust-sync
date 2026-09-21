@@ -82,6 +82,50 @@ API 文件位於 `http://127.0.0.1:8000/docs`。若要重設瀏覽器 profile，
 
 平台可啟動不代表券商的首次憑證申請已在所有作業系統與瀏覽器組合完成驗證。
 
+### Linux Docker GUI／noVNC
+
+伺服器沒有實體桌面時，可使用專案內的 `compose.yaml` 啟動持久化的 Linux
+GUI、Chromium、HTTPS noVNC 與資料 API：
+
+```bash
+cp .env.example .env
+mkdir -p tls browser_profile output
+```
+
+在 `.env` 設定：
+
+```dotenv
+ENTRUST_API_TOKEN=<使用 openssl rand -hex 32 產生>
+ENTRUST_VNC_PASSWORD=<8 位英數密碼>
+```
+
+產生區網用自簽憑證；請將範例 IP 換成伺服器實際位址：
+
+```bash
+SERVER_IP=192.168.1.50
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 825 \
+  -keyout tls/novnc.key \
+  -out tls/novnc.crt \
+  -subj "/CN=$SERVER_IP" \
+  -addext "subjectAltName=IP:$SERVER_IP,IP:127.0.0.1,DNS:localhost"
+chmod 600 tls/novnc.key
+```
+
+啟動服務：
+
+```bash
+docker compose up -d --build
+```
+
+- noVNC：`https://<server-ip>:6080/`；根路徑會導向 `vnc.html`，不開放目錄列表。
+- API：`https://<server-ip>:8888/docs`；受保護端點需要 Bearer Token。
+- 同機 agent：`./scripts/entrust-api /api/v1/inventory`。
+
+同一張 TLS 憑證同時保護 noVNC 與 API；FastAPI 僅在容器內部的 8889 埠提供
+HTTP，不會發布到主機。自簽憑證首次使用時不會被瀏覽器自動信任；可將
+`tls/novnc.crt` 匯入受信任裝置。不要把 `tls/`、`.env`、`browser_profile/`
+或 `output/` 提交到 Git。
+
 ## Session 有效期
 
 華南永昌的 session 大約 **1 小時**過期。

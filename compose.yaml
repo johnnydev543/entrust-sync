@@ -1,0 +1,24 @@
+services:
+  entrust-sync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: entrust-sync
+    restart: unless-stopped
+    init: true
+    shm_size: 1gb
+    env_file:
+      - .env
+    environment:
+      DISPLAY: :99
+      ENTRUST_API_HOST: 127.0.0.1
+      ENTRUST_API_PORT: 8889
+    volumes:
+      - ./browser_profile:/app/browser_profile
+      - ./output:/app/output
+      - ./tls:/app/tls:ro
+    ports:
+      - "0.0.0.0:6080:6080"
+      - "0.0.0.0:8888:8888"
+    security_opt:
+      - no-new-privileges:true

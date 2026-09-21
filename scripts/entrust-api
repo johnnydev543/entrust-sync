@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+CONFIG_FILE="${ENTRUST_SYNC_ENV:-$PROJECT_DIR/.env}"
+CA_FILE="${ENTRUST_SYNC_CA:-$PROJECT_DIR/tls/novnc.crt}"
+API_TOKEN="$(sed -n 's/^ENTRUST_API_TOKEN=//p' "$CONFIG_FILE" | head -n 1)"
+ENDPOINT="${1:-/health}"
+shift || true
+
+if [[ "$ENDPOINT" != /* ]]; then
+    ENDPOINT="/$ENDPOINT"
+fi
+
+exec curl \
+    --fail-with-body \
+    --silent \
+    --show-error \
+    --cacert "$CA_FILE" \
+    -H "Authorization: Bearer $API_TOKEN" \
+    "https://127.0.0.1:8888$ENDPOINT" \
+    "$@"

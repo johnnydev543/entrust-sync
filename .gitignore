@@ -2,6 +2,7 @@
 output/
 browser_profile/
 session/
+tls/
 __pycache__/
 *.pyc
 *.png
