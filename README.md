@@ -117,6 +117,16 @@ chmod 600 tls/novnc.key
 docker compose up -d --build
 ```
 
+修改 `.env`（尤其是 `ENTRUST_API_TOKEN` 或 `ENTRUST_VNC_PASSWORD`）後，
+既有容器不會自動重新載入新值。請強制重建容器：
+
+```bash
+docker compose up -d --force-recreate
+```
+
+否則 helper 可能讀到新 token，但 API 容器仍使用舊 token，導致請求回傳
+`401 Unauthorized`。
+
 - noVNC：`https://<server-ip>:6080/`；根路徑會導向 `vnc.html`，不開放目錄列表。
 - API：`https://<server-ip>:8888/docs`；受保護端點需要 Bearer Token。
 - 同機 agent：`./scripts/entrust-api /api/v1/inventory`。
