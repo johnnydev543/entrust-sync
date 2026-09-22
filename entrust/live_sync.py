@@ -82,6 +82,12 @@ class BrowserWorker:
                 if not self._logged_in and "login" not in page.url.lower():
                     page.goto(LOGIN_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
                     page = self._update_login_state(context, page)
+                # Chromium/Playwright 可能保留一個 about:blank 分頁並將它放在前景。
+                # API 已自行恢復 cookies 並導航華南頁面，不需要保留空白分頁。
+                for extra_page in list(context.pages):
+                    if extra_page is not page and extra_page.url == "about:blank":
+                        extra_page.close()
+                page.bring_to_front()
                 self._ready_event.set()
                 if self._logged_in:
                     print("✅ 已沿用 browser_profile 中仍有效的登入 session")
