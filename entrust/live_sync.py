@@ -77,10 +77,11 @@ class BrowserWorker:
                 # 伺服器端 session 仍有效，因此直接開主頁並觀察是否被導回登入頁。
                 page = self._update_login_state(context, page)
                 if not self._logged_in:
-                    page.goto(MAIN_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
+                    # 華南舊站會持續背景連線，等待 networkidle 可能永遠不成立。
+                    page.goto(MAIN_URL, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
                     page = self._update_login_state(context, page)
                 if not self._logged_in and "login" not in page.url.lower():
-                    page.goto(LOGIN_URL, wait_until="networkidle", timeout=DEFAULT_TIMEOUT)
+                    page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=DEFAULT_TIMEOUT)
                     page = self._update_login_state(context, page)
                 # Chromium/Playwright 可能保留一個 about:blank 分頁並將它放在前景。
                 # API 已自行恢復 cookies 並導航華南頁面，不需要保留空白分頁。
