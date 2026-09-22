@@ -14,6 +14,10 @@ DEFAULT_TIMEOUT = 30_000
 
 LAUNCH_ARGS = [
     "--restore-last-session",
+    # 純快取放在容器共享記憶體；browser_profile 僅持久化登入、網站狀態與憑證。
+    "--disk-cache-dir=/dev/shm/entrust-chromium-cache",
+    "--media-cache-dir=/dev/shm/entrust-chromium-media-cache",
+    "--disable-gpu-shader-disk-cache",
     "--disable-popup-blocking",
     "--disable-features=PopupBlocker",
     "--disable-blink-features=AutomationControlled",
