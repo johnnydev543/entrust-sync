@@ -19,6 +19,40 @@ services:
       - ./browser_profile:/app/browser_profile
       - ./output:/app/output
       - ./tls:/app/tls:ro
+      # Chromium 仍會建立下列固定目錄；nested tmpfs 讓內容只存在記憶體。
+      # 這些掛載不包含 cookies、Local Storage、Sessions 或 ClientCertificates。
+      - type: tmpfs
+        target: /app/browser_profile/Default/Cache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/Default/Code Cache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/Default/GPUCache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/Default/DawnGraphiteCache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/Default/DawnWebGPUCache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/GrShaderCache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/GraphiteDawnCache
+        tmpfs:
+          size: 67108864
+      - type: tmpfs
+        target: /app/browser_profile/ShaderCache
+        tmpfs:
+          size: 67108864
     ports:
       - "0.0.0.0:6080:6080"
       # .env host:port -> 容器 nginx HTTPS 8888 -> FastAPI HTTP 127.0.0.1:8889

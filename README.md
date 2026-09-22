@@ -67,10 +67,12 @@ API 文件位於 `http://127.0.0.1:8000/docs`。若要重設瀏覽器 profile，
 也可能由作業系統 Keychain／憑證儲存區或網站的 WebCA 機制管理，因此不應
 假設所有憑證資料都只存在 `browser_profile/`。
 
-Docker 內的 HTTP、媒體與 GPU shader 快取會寫入 `/dev/shm`，不隨容器重建
-保留；cookies、Local Storage、IndexedDB、session restore 與 Chromium
-`ClientCertificates` 則繼續保存在 `browser_profile/`。這些網站狀態可能共同
-參與券商登入與憑證驗證，不應只保留單一 cookie 檔。
+Docker 內的 HTTP 與媒體快取會寫入 `/dev/shm`；Chromium 固定建立的
+`Cache`、`Code Cache`、`GPUCache` 與 shader cache 目錄則由 Compose 掛載為
+64 MiB 的 nested `tmpfs`。這些目錄名稱仍然可見，但內容只存在記憶體，容器
+重建後不保留。cookies、Local Storage、IndexedDB、session restore 與
+Chromium `ClientCertificates` 繼續保存在 `browser_profile/`。這些網站狀態
+可能共同參與券商登入與憑證驗證，不應只保留單一 cookie 檔。
 
 `browser_profile/` 含有重要的登入與瀏覽器狀態，請勿手動刪除或修改。只有在
 確定需要重建環境，且願意重新完成登入與憑證流程時，才執行：
