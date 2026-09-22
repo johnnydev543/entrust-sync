@@ -12,7 +12,7 @@ from playwright.sync_api import sync_playwright
 from entrust.capture import capture_aggregate_inventory, capture_all_tables
 from entrust.config import DEFAULT_TIMEOUT, LOGIN_URL, MAIN_URL, OUTPUT_DIR
 from entrust.handlers import alert_log, reset_alert_log
-from entrust.browser import launch_browser
+from entrust.browser import launch_browser, save_session_cookies
 
 
 class LoginRequiredError(RuntimeError):
@@ -108,6 +108,7 @@ class BrowserWorker:
                             self._error = str(exc)
                             future.set_exception(exc)
                 finally:
+                    save_session_cookies(context)
                     context.close()
         except Exception as exc:
             self._error = str(exc)
@@ -120,6 +121,7 @@ class BrowserWorker:
 
     def _update_login_state(self, context, preferred_page):
         """從所有視窗找出真正已登入的主頁，避免一直盯著舊登入頁。"""
+        was_logged_in = self._logged_in
         candidates = []
         page_urls = []
         pages = list(context.pages)
@@ -149,6 +151,8 @@ class BrowserWorker:
             self._current_url = active_page.url
             self._logged_in = True
             self._error = ""
+            if not was_logged_in:
+                save_session_cookies(context)
             return active_page
 
         try:

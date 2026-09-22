@@ -1,4 +1,4 @@
-"""瀏覽器啟動（Edge → Chromium fallback）+ addInitScript 注入。
+"""Chromium persistent context 啟動、session cookie 保存與 init script 注入。
 
 init script 的行為是刻意的（見 AGENTS.md 關鍵規則 3–5）：
 - navigator.webdriver 必須為 false，否則客戶專區會移除 ElectricCA 等路由
@@ -6,7 +6,10 @@ init script 的行為是刻意的（見 AGENTS.md 關鍵規則 3–5）：
 - window.open 純記錄、必須回傳真正的 Window（回傳 null 會弄壞憑證表單提交）
 """
 
-from entrust.config import LAUNCH_ARGS, USER_DATA_DIR
+import json
+import os
+
+from entrust.config import LAUNCH_ARGS, SESSION_COOKIES_FILE, USER_DATA_DIR
 from entrust.handlers import on_dialog, on_popup
 
 INIT_SCRIPT = """
@@ -35,32 +38,53 @@ INIT_SCRIPT = """
 """
 
 
+def restore_session_cookies(context):
+    """還原正常關閉前保存的 session cookies；失敗時仍允許瀏覽器啟動。"""
+    if not SESSION_COOKIES_FILE.exists():
+        return 0
+    try:
+        cookies = json.loads(SESSION_COOKIES_FILE.read_text(encoding="utf-8"))
+        if not isinstance(cookies, list):
+            raise ValueError("cookie state 格式錯誤")
+        if cookies:
+            context.add_cookies(cookies)
+        print(f"   ✅ 已還原 {len(cookies)} 個 session cookies")
+        return len(cookies)
+    except Exception as exc:
+        print(f"⚠️ 無法還原 session cookies（{exc}）")
+        return 0
+
+
+def save_session_cookies(context):
+    """原子寫入 cookies 到 persistent profile，權限限制為目前使用者。"""
+    try:
+        cookies = context.cookies()
+        USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+        temp_file = SESSION_COOKIES_FILE.with_suffix(".json.tmp")
+        temp_file.write_text(json.dumps(cookies, ensure_ascii=False), encoding="utf-8")
+        os.chmod(temp_file, 0o600)
+        temp_file.replace(SESSION_COOKIES_FILE)
+        return len(cookies)
+    except Exception as exc:
+        print(f"⚠️ 無法保存 session cookies（{exc}）")
+        return 0
+
+
 def launch_browser(playwright):
-    """以 persistent context 啟動瀏覽器，優先 Edge（憑證元件需要）。
+    """以 persistent context 啟動 Chromium，並還原上次保存的 session。
 
     回傳 (context, browser_channel)。
     """
-    browser_channel = "msedge"
-    try:
-        print("🚀 啟動瀏覽器（嘗試 Edge）...")
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
-            channel=browser_channel,
-            headless=False,
-            viewport={"width": 1920, "height": 1080},
-            accept_downloads=True,
-            args=LAUNCH_ARGS,
-        )
-    except Exception as e:
-        print(f"⚠️ Edge 啟動失敗（{e}），改用 Chromium...")
-        browser_channel = "chromium"
-        context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(USER_DATA_DIR),
-            headless=False,
-            viewport={"width": 1920, "height": 1080},
-            accept_downloads=True,
-            args=LAUNCH_ARGS,
-        )
+    browser_channel = "chromium"
+    print("🚀 啟動 Chromium...")
+    context = playwright.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
+        headless=False,
+        viewport={"width": 1920, "height": 1080},
+        accept_downloads=True,
+        args=LAUNCH_ARGS,
+    )
+    restore_session_cookies(context)
     print(f"   ✅ 使用瀏覽器: {browser_channel}")
 
     # addInitScript 在每個頁面的任何 JS 執行前就注入，比 page.evaluate()

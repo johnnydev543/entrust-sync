@@ -20,6 +20,9 @@ class FakeContext:
     def __init__(self, pages):
         self.pages = pages
 
+    def cookies(self):
+        return []
+
 
 class BrowserWorkerLoginTest(unittest.TestCase):
     def test_uses_logged_in_page_instead_of_original_login_page(self):

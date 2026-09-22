@@ -60,8 +60,10 @@ API 文件位於 `http://127.0.0.1:8000/docs`。若要重設瀏覽器 profile，
 瀏覽器的憑證機制接手。這類介面不一定會出現在 Playwright 的 `page` 清單中，
 因此腳本不嘗試自動操作；使用者需手動完成帳密、OTP 與憑證步驟。
 
-程式使用 **persistent context**（`browser_profile/` 目錄）保留 cookies、
-網站儲存狀態與瀏覽器設定，讓後續啟動可以重用已完成的登入環境。憑證私鑰
+程式預設啟動 Chromium，並使用 **persistent context**（`browser_profile/`
+目錄）保留 cookies、網站儲存狀態與瀏覽器設定。登入成功與正常關閉時，程式
+也會在同一目錄保存 session cookies，讓容器重建後可重用仍未過期的登入環境。
+券商伺服器端已失效的 session 仍必須重新登入。憑證私鑰
 也可能由作業系統 Keychain／憑證儲存區或網站的 WebCA 機制管理，因此不應
 假設所有憑證資料都只存在 `browser_profile/`。
 
